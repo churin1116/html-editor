@@ -9,7 +9,7 @@ Built because viewing/editing personal Markdown notes from a code editor felt he
 - **Hybrid HTML / Markdown** — `.html` files are edited directly and stay viewable via `file://` (Chameleon-themed; switch theme without re-saving). `.md` files are converted to HTML on read and back to Markdown on save, so existing `.md` notes keep their format and remain `git diff`-friendly.
 - **Chameleon-compatible saved files** — Every saved `.html` follows the [Chameleon v1 theme contract](https://github.com/churin1116/html-chameleon), so a single theme switch (Chrome extension, `localStorage`, or `data-theme` attribute) repaints every file at once. The editor UI itself uses the same variables for visual parity.
 - **WYSIWYG editing** — TipTap 3.x with headings, lists, tables, links, code blocks, and more.
-- **Absolute paths via whitelist** — Edit files anywhere on disk. Allowed roots are explicitly listed in `config/allowed-roots.json`; arbitrary paths are rejected by the API.
+- **Absolute paths via whitelist** — Edit files anywhere on disk. Allowed roots are managed from the sidebar (or directly in `config/allowed-roots.json`); arbitrary paths are rejected by the API. Supports `~/...` paths.
 - **External-edit conflict detection** — Captures `mtime` on open and rejects writes that would clobber concurrent changes (e.g., from VS Code or `git pull`).
 - **New file creation** — Sidebar `+ New` button creates an `.html` file under the chosen root.
 
@@ -32,7 +32,11 @@ Requires Node.js 20+ and pnpm 9+.
 
 ## Configuration
 
-`config/allowed-roots.json` lists every directory the editor can read or write:
+There are two ways to register the directories the editor can read or write:
+
+**Via the GUI (recommended).** When you start with no roots configured, the sidebar shows an "Add your first root" button. Once you have at least one root, an "+ Add root" link appears next to the heading; the × button on each root removes it. The path field accepts both absolute paths and `~`-prefixed paths (`~/notes` → `/Users/you/notes`). The server validates that the path exists and is a directory before saving.
+
+**Via `config/allowed-roots.json` directly.** The GUI persists to the same file:
 
 ```json
 {

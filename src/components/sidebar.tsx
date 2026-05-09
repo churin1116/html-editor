@@ -25,13 +25,21 @@ export function Sidebar({
   const [trees, setTrees] = useState<Record<string, TreeEntry[]>>({});
   const [rootErrors, setRootErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+
+  const fetchRoots = useCallback(async () => {
+    try {
+      const r = await fetch("/api/roots");
+      const data = await r.json();
+      setRoots(data.roots ?? []);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
 
   useEffect(() => {
-    fetch("/api/roots")
-      .then((r) => r.json())
-      .then((data) => setRoots(data.roots ?? []))
-      .catch((e) => setError(String(e)));
-  }, []);
+    fetchRoots();
+  }, [fetchRoots]);
 
   const reloadTree = useCallback(async (rootPath: string) => {
     try {
@@ -81,32 +89,123 @@ export function Sidebar({
     [reloadTree, onCreated],
   );
 
+  const handleAddRoot = useCallback(
+    async (label: string, path: string) => {
+      const res = await fetch("/api/roots", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ label, path }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return data.error ? `${data.error}${data.path ? ` (${data.path})` : ""}` : "Failed";
+      }
+      setRoots(data.roots ?? []);
+      setShowAddForm(false);
+      return null;
+    },
+    [],
+  );
+
+  const handleRemoveRoot = useCallback(
+    async (rootPath: string, label: string) => {
+      const ok = window.confirm(
+        `Remove "${label}" from allowed roots?\nFiles on disk are NOT deleted.`,
+      );
+      if (!ok) return;
+      const res = await fetch(`/api/roots?path=${encodeURIComponent(rootPath)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        window.alert(`Failed: ${data.error}`);
+        return;
+      }
+      setRoots(data.roots ?? []);
+      setTrees((prev) => {
+        const { [rootPath]: _, ...rest } = prev;
+        return rest;
+      });
+      setRootErrors((prev) => {
+        const { [rootPath]: _, ...rest } = prev;
+        return rest;
+      });
+    },
+    [],
+  );
+
   if (error) return <div className="p-4 text-sm text-red-600">Error: {error}</div>;
-  if (roots.length === 0) {
-    return (
-      <div className="p-4 text-sm text-[var(--text-muted)]">
-        <div className="font-semibold mb-2">No allowed roots configured</div>
-        <div>Create config/allowed-roots.json (see config/allowed-roots.example.json).</div>
-      </div>
-    );
-  }
+
+  const isEmpty = roots.length === 0;
 
   return (
     <div className="p-3 text-sm overflow-y-auto h-full">
-      {roots.map((root) => (
-        <div key={root.path} className="mb-4">
-          <div className="flex items-center justify-between px-1 mb-2">
-            <div className="font-semibold text-[var(--text-muted)] uppercase tracking-wider text-xs truncate">
-              {root.label}
-            </div>
+      {isEmpty && !showAddForm && (
+        <div className="mb-4 p-3 rounded bg-surface border-subtle border">
+          <div className="font-semibold mb-1">No allowed roots configured</div>
+          <div className="text-[var(--text-muted)] mb-3 text-xs">
+            Add a directory to start editing files in it. The path can be absolute
+            (<code>/Users/you/notes</code>) or use <code>~/notes</code>.
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowAddForm(true)}
+            className="btn btn-primary w-full"
+          >
+            + Add your first root
+          </button>
+        </div>
+      )}
+
+      {!isEmpty && (
+        <div className="flex items-center justify-between px-1 mb-2">
+          <div className="font-semibold text-[var(--text-muted)] uppercase tracking-wider text-xs">
+            Roots
+          </div>
+          {!showAddForm && (
             <button
               type="button"
-              onClick={() => handleNewFile(root.path)}
+              onClick={() => setShowAddForm(true)}
               className="text-xs px-1.5 py-0.5 rounded hover:bg-black/5 text-[var(--text-muted)]"
-              title="New HTML file"
+              title="Add another root"
             >
-              + New
+              + Add root
             </button>
+          )}
+        </div>
+      )}
+
+      {showAddForm && (
+        <AddRootForm
+          onCancel={() => setShowAddForm(false)}
+          onSubmit={handleAddRoot}
+        />
+      )}
+
+      {roots.map((root) => (
+        <div key={root.path} className="mb-4">
+          <div className="flex items-center justify-between px-1 mb-2 group">
+            <div className="font-semibold text-[var(--text-muted)] uppercase tracking-wider text-xs truncate flex-1">
+              {root.label}
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => handleNewFile(root.path)}
+                className="text-xs px-1.5 py-0.5 rounded hover:bg-black/5 text-[var(--text-muted)]"
+                title="New HTML file"
+              >
+                + New
+              </button>
+              <button
+                type="button"
+                onClick={() => handleRemoveRoot(root.path, root.label)}
+                className="text-xs px-1.5 py-0.5 rounded hover:bg-black/5 text-[var(--text-muted)]"
+                title={`Remove ${root.label} from allowed roots`}
+              >
+                ×
+              </button>
+            </div>
           </div>
           {rootErrors[root.path] ? (
             <div className="px-2 py-2 text-xs text-red-600 bg-red-50 rounded">
@@ -124,6 +223,90 @@ export function Sidebar({
         </div>
       ))}
     </div>
+  );
+}
+
+function AddRootForm({
+  onCancel,
+  onSubmit,
+}: {
+  onCancel: () => void;
+  onSubmit: (label: string, path: string) => Promise<string | null>;
+}) {
+  const [label, setLabel] = useState("");
+  const [path, setPath] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setErr(null);
+    if (!label.trim() || !path.trim()) {
+      setErr("Both label and path are required");
+      return;
+    }
+    setSubmitting(true);
+    const result = await onSubmit(label.trim(), path.trim());
+    setSubmitting(false);
+    if (result) {
+      setErr(result);
+    } else {
+      setLabel("");
+      setPath("");
+    }
+  }
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="mb-4 p-3 rounded bg-surface border-subtle border"
+    >
+      <div className="font-semibold text-xs uppercase tracking-wider text-[var(--text-muted)] mb-2">
+        Add a root
+      </div>
+      <label className="block mb-2">
+        <span className="text-xs text-[var(--text-muted)]">Label</span>
+        <input
+          type="text"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="Notes"
+          className="w-full mt-1 px-2 py-1 rounded border border-[var(--border)] bg-canvas text-sm"
+        />
+      </label>
+      <label className="block mb-2">
+        <span className="text-xs text-[var(--text-muted)]">Path</span>
+        <input
+          type="text"
+          value={path}
+          onChange={(e) => setPath(e.target.value)}
+          placeholder="~/notes or /absolute/path"
+          spellCheck={false}
+          autoCapitalize="off"
+          autoComplete="off"
+          className="w-full mt-1 px-2 py-1 rounded border border-[var(--border)] bg-canvas text-sm font-mono"
+        />
+      </label>
+      {err && (
+        <div className="alert alert-danger text-xs mb-2">{err}</div>
+      )}
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          disabled={submitting}
+          className="btn btn-primary text-xs disabled:opacity-40"
+        >
+          {submitting ? "Adding..." : "Add"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="btn btn-ghost text-xs"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
 
