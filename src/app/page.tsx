@@ -127,8 +127,8 @@ export default function Page() {
 
   return (
     <div className="grid grid-cols-[280px_1fr] h-screen">
-      <aside className="border-r border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden flex flex-col">
-        <header className="px-4 py-3 border-b border-[var(--color-border)] font-semibold">
+      <aside className="border-r border-[var(--border)] bg-[var(--surface)] overflow-hidden flex flex-col">
+        <header className="px-4 py-3 border-b border-[var(--border)] font-semibold">
           html-editor
         </header>
         <div className="flex-1 overflow-hidden">
@@ -141,8 +141,8 @@ export default function Page() {
         </div>
       </aside>
       <main className="flex flex-col overflow-hidden">
-        <div className="flex items-center gap-3 px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-surface)]">
-          <div className="flex-1 text-sm truncate text-[var(--color-muted)]">
+        <div className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border)] bg-[var(--surface)]">
+          <div className="flex-1 text-sm truncate text-[var(--text-muted)]">
             {file ? (
               <span>
                 <span
@@ -161,12 +161,12 @@ export default function Page() {
             )}
             {dirty && <span className="ml-2 text-orange-500">●</span>}
           </div>
-          <div className="text-xs text-[var(--color-muted)]">{status}</div>
+          <div className="text-xs text-[var(--text-muted)]">{status}</div>
           <button
             type="button"
             onClick={handleSave}
             disabled={!file || !dirty || saving}
-            className="px-3 py-1 rounded bg-[var(--color-accent)] text-white text-sm disabled:opacity-40"
+            className="btn btn-primary px-3 py-1 text-sm disabled:opacity-40"
           >
             {saving ? "Saving..." : "Save (⌘S)"}
           </button>
@@ -175,7 +175,7 @@ export default function Page() {
           {file ? (
             <Editor content={draft} onChange={handleChange} />
           ) : (
-            <div className="flex items-center justify-center h-full text-[var(--color-muted)] text-sm">
+            <div className="flex items-center justify-center h-full text-[var(--text-muted)] text-sm">
               No file selected.
             </div>
           )}

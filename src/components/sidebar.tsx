@@ -84,7 +84,7 @@ export function Sidebar({
   if (error) return <div className="p-4 text-sm text-red-600">Error: {error}</div>;
   if (roots.length === 0) {
     return (
-      <div className="p-4 text-sm text-[var(--color-muted)]">
+      <div className="p-4 text-sm text-[var(--text-muted)]">
         <div className="font-semibold mb-2">No allowed roots configured</div>
         <div>Create config/allowed-roots.json (see config/allowed-roots.example.json).</div>
       </div>
@@ -96,13 +96,13 @@ export function Sidebar({
       {roots.map((root) => (
         <div key={root.path} className="mb-4">
           <div className="flex items-center justify-between px-1 mb-2">
-            <div className="font-semibold text-[var(--color-muted)] uppercase tracking-wider text-xs truncate">
+            <div className="font-semibold text-[var(--text-muted)] uppercase tracking-wider text-xs truncate">
               {root.label}
             </div>
             <button
               type="button"
               onClick={() => handleNewFile(root.path)}
-              className="text-xs px-1.5 py-0.5 rounded hover:bg-black/5 text-[var(--color-muted)]"
+              className="text-xs px-1.5 py-0.5 rounded hover:bg-black/5 text-[var(--text-muted)]"
               title="New HTML file"
             >
               + New
@@ -180,7 +180,7 @@ function DirectoryNode({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="w-full text-left px-2 py-1 rounded hover:bg-black/5 text-[var(--color-muted)]"
+        className="w-full text-left px-2 py-1 rounded hover:bg-black/5 text-[var(--text-muted)]"
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
       >
         {open ? "▾" : "▸"} {entry.name}
@@ -217,7 +217,7 @@ function FileNode({
       type="button"
       onClick={() => onSelect(entry.path)}
       className={`w-full text-left px-2 py-1 rounded truncate flex items-center gap-2 ${
-        isSelected ? "bg-[var(--color-accent)] text-white" : "hover:bg-black/5"
+        isSelected ? "bg-primary" : "hover:bg-black/5"
       }`}
       style={{ paddingLeft: `${depth * 12 + 8}px` }}
       title={entry.path}

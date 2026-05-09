@@ -44,7 +44,7 @@ export function Editor({
   if (!editor) return null;
 
   return (
-    <div className="h-full overflow-y-auto bg-white">
+    <div className="h-full overflow-y-auto bg-canvas">
       <Toolbar editor={editor} />
       <EditorContent editor={editor} className="tiptap-wrapper" />
     </div>
@@ -73,7 +73,7 @@ function Toolbar({ editor }: { editor: ReturnType<typeof useEditor> }) {
     </button>
   );
   return (
-    <div className="sticky top-0 z-10 flex flex-wrap gap-1 px-3 py-2 border-b border-[var(--color-border)] bg-white/90 backdrop-blur">
+    <div className="sticky top-0 z-10 flex flex-wrap gap-1 px-3 py-2 border-b border-[var(--border)] bg-surface">
       <Btn
         onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
         active={editor.isActive("heading", { level: 1 })}
@@ -89,7 +89,7 @@ function Toolbar({ editor }: { editor: ReturnType<typeof useEditor> }) {
         active={editor.isActive("heading", { level: 3 })}
         label="H3"
       />
-      <span className="w-px bg-[var(--color-border)] mx-1" />
+      <span className="w-px bg-[var(--border)] mx-1" />
       <Btn
         onClick={() => editor.chain().focus().toggleBold().run()}
         active={editor.isActive("bold")}
@@ -110,7 +110,7 @@ function Toolbar({ editor }: { editor: ReturnType<typeof useEditor> }) {
         active={editor.isActive("code")}
         label="<>"
       />
-      <span className="w-px bg-[var(--color-border)] mx-1" />
+      <span className="w-px bg-[var(--border)] mx-1" />
       <Btn
         onClick={() => editor.chain().focus().toggleBulletList().run()}
         active={editor.isActive("bulletList")}
@@ -131,7 +131,7 @@ function Toolbar({ editor }: { editor: ReturnType<typeof useEditor> }) {
         active={editor.isActive("codeBlock")}
         label="Code"
       />
-      <span className="w-px bg-[var(--color-border)] mx-1" />
+      <span className="w-px bg-[var(--border)] mx-1" />
       <Btn
         onClick={() => {
           const url = window.prompt("URL");

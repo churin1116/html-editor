@@ -1,29 +1,21 @@
+const CHAMELEON_THEME_CSS = "https://churin1116.github.io/html-chameleon/theme/v1/theme.css";
+const CHAMELEON_THEME_JS = "https://churin1116.github.io/html-chameleon/theme/v1/theme.js";
+
 const PROSE_CSS = `
-  :root { color-scheme: light dark; }
   body {
     max-width: 760px;
     margin: 4rem auto;
     padding: 0 1.5rem;
     font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
     line-height: 1.8;
-    color: #1a1a1a;
-    background: #fafafa;
-  }
-  @media (prefers-color-scheme: dark) {
-    body { color: #e8e8e8; background: #111; }
-    pre { background: #1c1c1c !important; }
-    code { background: #2a2a2a; }
-    a { color: #79b8ff; }
-    blockquote { border-left-color: #444; color: #aaa; }
   }
   h1, h2, h3, h4 { line-height: 1.3; margin-top: 2em; }
   h1 { font-size: 1.9rem; }
   h2 { font-size: 1.5rem; }
   h3 { font-size: 1.2rem; }
   p { margin: 1em 0; }
-  a { color: #0366d6; }
   pre {
-    background: #f6f8fa;
+    background: var(--surface-2);
     padding: 1rem;
     border-radius: 6px;
     overflow-x: auto;
@@ -31,24 +23,23 @@ const PROSE_CSS = `
   }
   code {
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    background: rgba(127,127,127,0.15);
+    background: var(--surface-2);
     padding: 0.15em 0.35em;
     border-radius: 3px;
     font-size: 0.9em;
   }
   pre code { background: none; padding: 0; }
   blockquote {
-    border-left: 4px solid #ddd;
+    border-left: 4px solid var(--border-strong);
     padding-left: 1em;
-    color: #666;
+    color: var(--text-muted);
     margin: 1em 0;
   }
   ul, ol { padding-left: 1.5em; }
   table { border-collapse: collapse; width: 100%; margin: 1em 0; }
-  th, td { border: 1px solid #ddd; padding: 0.5em 0.75em; }
-  th { background: rgba(127,127,127,0.1); }
+  th, td { border: 1px solid var(--border); padding: 0.5em 0.75em; }
+  th { background: var(--surface); }
   img { max-width: 100%; height: auto; }
-  hr { border: none; border-top: 1px solid #ddd; margin: 2em 0; }
 `.trim();
 
 const CONTENT_OPEN = '<article id="content" data-html-editor="1">';
@@ -57,14 +48,17 @@ const CONTENT_CLOSE = "</article>";
 export function wrapContent(innerHtml: string, title: string): string {
   const safeTitle = escapeHtml(title);
   return `<!doctype html>
-<html lang="ja">
+<html lang="ja" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="chameleon" content="v1">
 <title>${safeTitle}</title>
+<link rel="stylesheet" href="${CHAMELEON_THEME_CSS}">
+<script src="${CHAMELEON_THEME_JS}"></script>
 <style>${PROSE_CSS}</style>
 </head>
-<body>
+<body class="bg-canvas">
 ${CONTENT_OPEN}
 ${innerHtml}
 ${CONTENT_CLOSE}
