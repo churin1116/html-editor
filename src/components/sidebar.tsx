@@ -69,9 +69,7 @@ export function Sidebar({
 
   const handleNewFile = useCallback(
     async (rootPath: string) => {
-      const name = window.prompt(
-        "New HTML file name (e.g. 'memo' or 'memo.html'):",
-      );
+      const name = window.prompt("New HTML file name");
       if (!name) return;
       const res = await fetch("/api/file", {
         method: "POST",
@@ -98,7 +96,9 @@ export function Sidebar({
       });
       const data = await res.json();
       if (!res.ok) {
-        return data.error ? `${data.error}${data.path ? ` (${data.path})` : ""}` : "Failed";
+        return data.error
+          ? `${data.error}${data.path ? ` (${data.path})` : ""}`
+          : "Failed";
       }
       setRoots(data.roots ?? []);
       setShowAddForm(false);
@@ -110,12 +110,13 @@ export function Sidebar({
   const handleRemoveRoot = useCallback(
     async (rootPath: string, label: string) => {
       const ok = window.confirm(
-        `Remove "${label}" from allowed roots?\nFiles on disk are NOT deleted.`,
+        `Remove "${label}"?\nFiles on disk are not deleted.`,
       );
       if (!ok) return;
-      const res = await fetch(`/api/roots?path=${encodeURIComponent(rootPath)}`, {
-        method: "DELETE",
-      });
+      const res = await fetch(
+        `/api/roots?path=${encodeURIComponent(rootPath)}`,
+        { method: "DELETE" },
+      );
       const data = await res.json();
       if (!res.ok) {
         window.alert(`Failed: ${data.error}`);
@@ -134,94 +135,100 @@ export function Sidebar({
     [],
   );
 
-  if (error) return <div className="p-4 text-sm text-red-600">Error: {error}</div>;
+  if (error) return <div className="p-5 text-sm text-[var(--danger)]">{error}</div>;
 
   const isEmpty = roots.length === 0;
 
   return (
-    <div className="p-3 text-sm overflow-y-auto h-full">
-      {isEmpty && !showAddForm && (
-        <div className="mb-4 p-3 rounded bg-surface border-subtle border">
-          <div className="font-semibold mb-1">No allowed roots configured</div>
-          <div className="text-[var(--text-muted)] mb-3 text-xs">
-            Add a directory to start editing files in it. The path can be absolute
-            (<code>/Users/you/notes</code>) or use <code>~/notes</code>.
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowAddForm(true)}
-            className="btn btn-primary w-full"
-          >
-            + Add your first root
-          </button>
-        </div>
-      )}
+    <div className="text-sm overflow-y-auto h-full">
+      {isEmpty && !showAddForm && <EmptyState onAdd={() => setShowAddForm(true)} />}
 
       {!isEmpty && (
-        <div className="flex items-center justify-between px-1 mb-2">
-          <div className="font-semibold text-[var(--text-muted)] uppercase tracking-wider text-xs">
-            Roots
-          </div>
+        <div className="flex items-center justify-between px-5 pt-5 pb-3">
+          <span className="section-label">Roots</span>
           {!showAddForm && (
             <button
               type="button"
               onClick={() => setShowAddForm(true)}
-              className="text-xs px-1.5 py-0.5 rounded hover:bg-black/5 text-[var(--text-muted)]"
+              className="text-[11px] text-[var(--text-subtle)] hover:text-[var(--text)] transition-colors"
               title="Add another root"
             >
-              + Add root
+              + add
             </button>
           )}
         </div>
       )}
 
       {showAddForm && (
-        <AddRootForm
-          onCancel={() => setShowAddForm(false)}
-          onSubmit={handleAddRoot}
-        />
+        <div className={isEmpty ? "px-5 pt-6" : "px-3"}>
+          <AddRootForm
+            onCancel={() => setShowAddForm(false)}
+            onSubmit={handleAddRoot}
+          />
+        </div>
       )}
 
-      {roots.map((root) => (
-        <div key={root.path} className="mb-4">
-          <div className="flex items-center justify-between px-1 mb-2 group">
-            <div className="font-semibold text-[var(--text-muted)] uppercase tracking-wider text-xs truncate flex-1">
-              {root.label}
+      <div className="px-3 pb-6">
+        {roots.map((root) => (
+          <div key={root.path} className="mb-5 group">
+            <div className="flex items-center justify-between px-2 mb-1.5">
+              <span className="text-[12px] font-medium text-[var(--text-muted)] truncate tracking-tight">
+                {root.label}
+              </span>
+              <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+                <IconBtn onClick={() => handleNewFile(root.path)} title="New HTML file">
+                  <PlusIcon />
+                </IconBtn>
+                <IconBtn
+                  onClick={() => handleRemoveRoot(root.path, root.label)}
+                  title="Remove root from list"
+                >
+                  <CloseIcon />
+                </IconBtn>
+              </div>
             </div>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => handleNewFile(root.path)}
-                className="text-xs px-1.5 py-0.5 rounded hover:bg-black/5 text-[var(--text-muted)]"
-                title="New HTML file"
-              >
-                + New
-              </button>
-              <button
-                type="button"
-                onClick={() => handleRemoveRoot(root.path, root.label)}
-                className="text-xs px-1.5 py-0.5 rounded hover:bg-black/5 text-[var(--text-muted)]"
-                title={`Remove ${root.label} from allowed roots`}
-              >
-                ×
-              </button>
-            </div>
+            {rootErrors[root.path] ? (
+              <div className="mx-2 px-3 py-2.5 text-[11.5px] text-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] rounded-md">
+                <div className="font-medium mb-0.5">{rootErrors[root.path]}</div>
+                <div className="text-[var(--text-muted)] break-all font-mono text-[10.5px]">
+                  {root.path}
+                </div>
+              </div>
+            ) : (
+              <TreeView
+                entries={trees[root.path] ?? []}
+                selectedPath={selectedPath}
+                onSelect={onSelect}
+                depth={0}
+              />
+            )}
           </div>
-          {rootErrors[root.path] ? (
-            <div className="px-2 py-2 text-xs text-red-600 bg-red-50 rounded">
-              <div className="font-semibold mb-1">⚠ {rootErrors[root.path]}</div>
-              <div className="text-red-500/80 break-all">{root.path}</div>
-            </div>
-          ) : (
-            <TreeView
-              entries={trees[root.path] ?? []}
-              selectedPath={selectedPath}
-              onSelect={onSelect}
-              depth={0}
-            />
-          )}
-        </div>
-      ))}
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EmptyState({ onAdd }: { onAdd: () => void }) {
+  return (
+    <div className="px-6 pt-16 pb-10 text-center welcome-fade-in">
+      <div
+        className="text-[28px] font-light leading-none mb-3 text-[var(--text)]"
+        style={{ letterSpacing: "-0.025em" }}
+      >
+        Begin.
+      </div>
+      <p className="text-[12.5px] text-[var(--text-muted)] leading-relaxed mb-7 max-w-[230px] mx-auto">
+        Add a directory to start editing. Paths can be absolute or use{" "}
+        <code className="font-mono text-[12px] text-[var(--text)]">~</code>.
+      </p>
+      <button
+        type="button"
+        onClick={onAdd}
+        className="btn-save-active"
+      >
+        Add a root
+      </button>
     </div>
   );
 }
@@ -259,54 +266,119 @@ function AddRootForm({
   return (
     <form
       onSubmit={handleSubmit}
-      className="mb-4 p-3 rounded bg-surface border-subtle border"
+      className="mb-5 px-4 py-4 bg-[var(--surface-2)] rounded-lg fade-in"
     >
-      <div className="font-semibold text-xs uppercase tracking-wider text-[var(--text-muted)] mb-2">
-        Add a root
-      </div>
-      <label className="block mb-2">
-        <span className="text-xs text-[var(--text-muted)]">Label</span>
-        <input
-          type="text"
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          placeholder="Notes"
-          className="w-full mt-1 px-2 py-1 rounded border border-[var(--border)] bg-canvas text-sm"
-        />
-      </label>
-      <label className="block mb-2">
-        <span className="text-xs text-[var(--text-muted)]">Path</span>
-        <input
-          type="text"
-          value={path}
-          onChange={(e) => setPath(e.target.value)}
-          placeholder="~/notes or /absolute/path"
-          spellCheck={false}
-          autoCapitalize="off"
-          autoComplete="off"
-          className="w-full mt-1 px-2 py-1 rounded border border-[var(--border)] bg-canvas text-sm font-mono"
-        />
-      </label>
+      <div className="section-label mb-3">Add root</div>
+      <input
+        type="text"
+        value={label}
+        onChange={(e) => setLabel(e.target.value)}
+        placeholder="Label"
+        className="input-line mb-3"
+        autoFocus
+      />
+      <input
+        type="text"
+        value={path}
+        onChange={(e) => setPath(e.target.value)}
+        placeholder="~/notes  or  /absolute/path"
+        spellCheck={false}
+        autoCapitalize="off"
+        autoComplete="off"
+        className="input-line font-mono mb-4"
+        style={{ fontSize: "12px" }}
+      />
       {err && (
-        <div className="alert alert-danger text-xs mb-2">{err}</div>
+        <div className="text-[11.5px] text-[var(--danger)] mb-3 leading-relaxed">
+          {err}
+        </div>
       )}
-      <div className="flex gap-2">
+      <div className="flex items-center gap-3">
         <button
           type="submit"
           disabled={submitting}
-          className="btn btn-primary text-xs disabled:opacity-40"
+          className="btn-save-active disabled:opacity-40"
         >
-          {submitting ? "Adding..." : "Add"}
+          {submitting ? "Adding…" : "Add"}
         </button>
         <button
           type="button"
           onClick={onCancel}
-          className="btn btn-ghost text-xs"
+          className="text-[12px] text-[var(--text-subtle)] hover:text-[var(--text)] transition-colors"
         >
           Cancel
         </button>
       </div>
     </form>
+  );
+}
+
+function IconBtn({
+  onClick,
+  title,
+  children,
+}: {
+  onClick: () => void;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className="inline-flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+    >
+      {children}
+    </button>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+    >
+      <path d="M8 3.5v9M3.5 8h9" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+    >
+      <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" />
+    </svg>
+  );
+}
+
+function ChevronIcon() {
+  return (
+    <svg viewBox="0 0 10 10" className="tree-dir-chevron-svg">
+      <path
+        d="M3.5 2L7 5L3.5 8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 
@@ -363,10 +435,15 @@ function DirectoryNode({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="w-full text-left px-2 py-1 rounded hover:bg-black/5 text-[var(--text-muted)]"
+        className="tree-dir"
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
       >
-        {open ? "▾" : "▸"} {entry.name}
+        <span
+          className={`tree-dir-chevron ${open ? "is-open" : ""}`}
+        >
+          <ChevronIcon />
+        </span>
+        <span className="truncate">{entry.name}</span>
       </button>
       {open && entry.children && (
         <TreeView
@@ -399,24 +476,12 @@ function FileNode({
     <button
       type="button"
       onClick={() => onSelect(entry.path)}
-      className={`w-full text-left px-2 py-1 rounded truncate flex items-center gap-2 ${
-        isSelected ? "bg-primary" : "hover:bg-black/5"
-      }`}
-      style={{ paddingLeft: `${depth * 12 + 8}px` }}
+      className={`tree-item ${isSelected ? "is-selected" : ""}`}
+      style={{ paddingLeft: `${depth * 12 + 14}px` }}
       title={entry.path}
     >
       <span className="truncate flex-1">{display}</span>
-      <span
-        className={`text-[10px] px-1 rounded ${
-          isSelected
-            ? "bg-white/20"
-            : isMd
-              ? "bg-amber-100 text-amber-700"
-              : "bg-blue-100 text-blue-700"
-        }`}
-      >
-        {isMd ? "MD" : "HTML"}
-      </span>
+      <span className="fmt-chip">{isMd ? "md" : "html"}</span>
     </button>
   );
 }

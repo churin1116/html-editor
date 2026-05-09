@@ -5,28 +5,327 @@ html, body {
   height: 100%;
   margin: 0;
   padding: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "ss01", "cv11";
 }
+
+button { font-family: inherit; }
+
+/* ============================================================
+   Brand & section labels
+   ============================================================ */
+
+.wordmark {
+  font-weight: 200;
+  letter-spacing: -0.02em;
+  font-size: 1.0625rem;
+  color: var(--text);
+}
+.wordmark::before {
+  content: "·";
+  margin: 0 0.35em;
+  color: var(--text-subtle);
+  font-weight: 200;
+}
+
+.section-label {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+}
+
+.fmt-chip {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+  font-weight: 500;
+}
+
+/* ============================================================
+   Tree
+   ============================================================ */
+
+.tree-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.tree-item:hover {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.tree-item.is-selected {
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+.tree-item.is-selected::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  background: var(--primary);
+  border-radius: 0 1px 1px 0;
+}
+
+.tree-dir {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.tree-dir:hover {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  color: var(--text);
+}
+
+.tree-dir-chevron {
+  display: inline-flex;
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  transition: transform 140ms ease;
+  color: var(--text-subtle);
+}
+.tree-dir-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+/* ============================================================
+   Toolbar
+   ============================================================ */
+
+.tb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 8px;
+  border-radius: 5px;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease;
+  user-select: none;
+}
+.tb-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.tb-btn.is-active {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.tb-btn[data-glyph="bold"] { font-weight: 700; }
+.tb-btn[data-glyph="italic"] { font-style: italic; }
+.tb-btn[data-glyph="strike"] { text-decoration: line-through; text-decoration-thickness: 1.5px; }
+
+.tb-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border-subtle);
+  margin: 0 6px;
+  align-self: center;
+}
+
+.tb-icon {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.6;
+  stroke: currentColor;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ============================================================
+   Inputs
+   ============================================================ */
+
+.input-line {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 7px 0;
+  font-size: 13px;
+  color: var(--text);
+  outline: none;
+  transition: border-color 120ms ease;
+}
+.input-line:focus {
+  border-bottom-color: var(--text);
+}
+.input-line::placeholder {
+  color: var(--text-subtle);
+}
+
+/* ============================================================
+   Buttons (page-level)
+   ============================================================ */
+
+.btn-save-active {
+  background: var(--primary);
+  color: var(--on-primary);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  border: 0;
+  cursor: pointer;
+  transition: opacity 120ms ease, transform 80ms ease;
+}
+.btn-save-active:hover { opacity: 0.92; }
+.btn-save-active:active { transform: translateY(0.5px); }
+
+.btn-save-inactive {
+  background: transparent;
+  color: var(--text-subtle);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  border: 0;
+  cursor: not-allowed;
+}
+
+.btn-ghost-sm {
+  background: transparent;
+  color: var(--text-muted);
+  padding: 5px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.btn-ghost-sm:hover {
+  background: var(--surface-2);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+/* ============================================================
+   TipTap content
+   ============================================================ */
 
 .tiptap {
   outline: none;
   min-height: 100%;
-  padding: 2rem 2.5rem;
-  line-height: 1.8;
+  padding: 4.5rem 5rem 7rem;
+  max-width: 760px;
+  margin: 0 auto;
+  line-height: 1.75;
   background: var(--canvas);
   color: var(--text);
+  font-size: 16px;
 }
-.tiptap h1 { font-size: 1.9rem; font-weight: 700; margin: 1.5em 0 0.6em; line-height: 1.3; }
-.tiptap h2 { font-size: 1.5rem; font-weight: 700; margin: 1.4em 0 0.5em; line-height: 1.3; }
-.tiptap h3 { font-size: 1.2rem; font-weight: 700; margin: 1.3em 0 0.4em; }
-.tiptap p { margin: 0.75em 0; }
-.tiptap ul, .tiptap ol { padding-left: 1.5em; margin: 0.75em 0; }
-.tiptap blockquote { border-left: 4px solid var(--border-strong); padding-left: 1em; color: var(--text-muted); margin: 1em 0; }
-.tiptap pre { background: var(--surface-2); padding: 1rem; border-radius: 6px; overflow-x: auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.9em; }
-.tiptap code { font-family: ui-monospace, "SF Mono", Menlo, monospace; background: var(--surface-2); padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+
+.tiptap h1 { font-size: 2rem; font-weight: 600; letter-spacing: -0.025em; line-height: 1.2; margin: 1.5em 0 0.5em; }
+.tiptap h2 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.3; margin: 1.4em 0 0.4em; }
+.tiptap h3 { font-size: 1.2rem; font-weight: 600; letter-spacing: -0.015em; margin: 1.3em 0 0.3em; }
+.tiptap p { margin: 0.85em 0; }
+.tiptap ul, .tiptap ol { padding-left: 1.5em; margin: 0.85em 0; }
+.tiptap blockquote {
+  border-left: 2px solid var(--border-strong);
+  padding-left: 1em;
+  color: var(--text-muted);
+  margin: 1.6em 0;
+  font-style: italic;
+}
+.tiptap pre {
+  background: var(--surface-2);
+  padding: 1rem 1.25rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.85em;
+  line-height: 1.6;
+}
+.tiptap code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  background: var(--surface-2);
+  padding: 0.15em 0.4em;
+  border-radius: 3px;
+  font-size: 0.88em;
+}
 .tiptap pre code { background: none; padding: 0; }
-.tiptap a { color: var(--primary); text-decoration: underline; }
-.tiptap table { border-collapse: collapse; width: 100%; margin: 1em 0; }
-.tiptap th, .tiptap td { border: 1px solid var(--border); padding: 0.5em 0.75em; }
-.tiptap th { background: var(--surface); font-weight: 600; }
-.tiptap img { max-width: 100%; height: auto; }
+.tiptap a {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--border-strong);
+  transition: text-decoration-color 120ms ease;
+}
+.tiptap a:hover { text-decoration-color: var(--text); }
+.tiptap table { border-collapse: collapse; width: 100%; margin: 1.5em 0; font-size: 14px; }
+.tiptap th, .tiptap td { border: 1px solid var(--border-subtle); padding: 0.6em 0.85em; text-align: left; }
+.tiptap th { font-weight: 600; background: var(--surface); }
+.tiptap img { max-width: 100%; height: auto; border-radius: 6px; }
+.tiptap hr { border: 0; height: 1px; background: var(--border); margin: 2.5em 0; }
+
+.tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--text-subtle);
+  pointer-events: none;
+  float: left;
+  height: 0;
+}
+
+/* ============================================================
+   Motion
+   ============================================================ */
+
+@keyframes editor-fade-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: editor-fade-in 240ms ease both; }
+
+@keyframes ws-fade-in {
+  from { opacity: 0; transform: translateY(8px); letter-spacing: 0.02em; }
+  to   { opacity: 1; transform: translateY(0); letter-spacing: -0.025em; }
+}
+.welcome-fade-in { animation: ws-fade-in 600ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+/* ============================================================
+   Misc
+   ============================================================ */
+
+.divider-h {
+  height: 1px;
+  background: var(--border-subtle);
+  width: 100%;
+}
