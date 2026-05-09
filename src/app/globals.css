@@ -194,29 +194,34 @@ button { font-family: inherit; }
    ============================================================ */
 
 .btn-save-active {
-  background: var(--primary);
-  color: var(--on-primary);
-  padding: 6px 14px;
+  background: transparent;
+  color: var(--primary);
+  padding: 5px 14px;
   border-radius: 6px;
   font-size: 12.5px;
   font-weight: 500;
   letter-spacing: 0.01em;
-  border: 0;
+  border: 1px solid var(--primary);
   cursor: pointer;
-  transition: opacity 120ms ease, transform 80ms ease;
+  transition: background 120ms ease, transform 80ms ease;
 }
-.btn-save-active:hover { opacity: 0.92; }
-.btn-save-active:active { transform: translateY(0.5px); }
+.btn-save-active:hover {
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+.btn-save-active:active {
+  transform: translateY(0.5px);
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+}
 
 .btn-save-inactive {
   background: transparent;
   color: var(--text-subtle);
-  padding: 6px 14px;
+  padding: 5px 14px;
   border-radius: 6px;
   font-size: 12.5px;
   font-weight: 500;
   letter-spacing: 0.01em;
-  border: 0;
+  border: 1px solid var(--border-subtle);
   cursor: not-allowed;
 }
 
