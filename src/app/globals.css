@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: #fafafa;
+  --color-surface: #ffffff;
+  --color-border: #e5e5e5;
+  --color-text: #1a1a1a;
+  --color-muted: #6b6b6b;
+  --color-accent: #0366d6;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--color-background);
+  color: var(--color-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
+}
+
+.tiptap {
+  outline: none;
+  min-height: 100%;
+  padding: 2rem 2.5rem;
+  line-height: 1.8;
+}
+.tiptap h1 { font-size: 1.9rem; font-weight: 700; margin: 1.5em 0 0.6em; line-height: 1.3; }
+.tiptap h2 { font-size: 1.5rem; font-weight: 700; margin: 1.4em 0 0.5em; line-height: 1.3; }
+.tiptap h3 { font-size: 1.2rem; font-weight: 700; margin: 1.3em 0 0.4em; }
+.tiptap p { margin: 0.75em 0; }
+.tiptap ul, .tiptap ol { padding-left: 1.5em; margin: 0.75em 0; }
+.tiptap blockquote { border-left: 4px solid #ddd; padding-left: 1em; color: #666; margin: 1em 0; }
+.tiptap pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.9em; }
+.tiptap code { font-family: ui-monospace, "SF Mono", Menlo, monospace; background: rgba(127,127,127,0.15); padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+.tiptap pre code { background: none; padding: 0; }
+.tiptap a { color: var(--color-accent); text-decoration: underline; }
+.tiptap table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+.tiptap th, .tiptap td { border: 1px solid #ddd; padding: 0.5em 0.75em; }
+.tiptap th { background: rgba(127,127,127,0.1); font-weight: 600; }
+.tiptap img { max-width: 100%; height: auto; }
+.tiptap hr { border: none; border-top: 1px solid #ddd; margin: 2em 0; }

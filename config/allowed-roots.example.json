@@ -1,0 +1,12 @@
+{
+  "roots": [
+    {
+      "label": "Notes",
+      "path": "/absolute/path/to/your/notes"
+    },
+    {
+      "label": "Project docs",
+      "path": "/another/absolute/path"
+    }
+  ]
+}
