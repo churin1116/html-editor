@@ -17,6 +17,7 @@ export type ActionId =
   | "link"
   | "unlink"
   | "table"
+  | "details"
   | "hr"
   | "ruby"
   | "undo"
@@ -49,6 +50,7 @@ export const ACTIONS: ActionDef[] = [
   { id: "link", label: "リンク", hint: "⌘+K", supports: ["html", "md"] },
   { id: "unlink", label: "リンク解除", supports: ["html"] },
   { id: "table", label: "テーブル", icon: "table", supports: ["html", "md"] },
+  { id: "details", label: "▾ 折りたたみ", supports: ["html", "md"] },
   { id: "hr", label: "--- 区切り線", supports: ["html", "md"] },
   { id: "ruby", label: "|ルビ《るび》", hint: "⌘+Shift+I", supports: ["md"] },
   { id: "undo", label: "取り消す", hint: "⌘+Z", supports: ["html", "md"] },
@@ -125,6 +127,16 @@ function insertTable(view: EditorView) {
   insertBlock(view, text);
 }
 
+function insertDetailsMd(view: EditorView) {
+  // Blank lines around the inner content are important: marked / GFM
+  // processors only re-enter Markdown parsing inside raw HTML if separated
+  // by blank lines. Inserted open so the body is immediately editable; the
+  // user can right-click the summary in the HTML editor to pin it to open /
+  // closed / preserve later on.
+  const text = "<details open>\n<summary>タイトル</summary>\n\n本文\n\n</details>";
+  insertBlock(view, text);
+}
+
 export function applyMdAction(view: EditorView, id: ActionId) {
   switch (id) {
     case "h1":
@@ -165,6 +177,9 @@ export function applyMdAction(view: EditorView, id: ActionId) {
       break;
     case "table":
       insertTable(view);
+      break;
+    case "details":
+      insertDetailsMd(view);
       break;
     case "hr":
       insertBlock(view, "---");
@@ -234,6 +249,17 @@ export function applyHtmlAction(editor: TiptapEditor, id: ActionId) {
       break;
     case "table":
       chain.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
+      break;
+    case "details":
+      chain
+        .insertContent({
+          type: "details",
+          attrs: { open: true, defaultState: "preserve" },
+          // Leave both inner nodes empty so CSS-based placeholders
+          // ("タイトル" / "本文") show until the user types something.
+          content: [{ type: "summary" }, { type: "paragraph" }],
+        })
+        .run();
       break;
     case "hr":
       chain.setHorizontalRule().run();

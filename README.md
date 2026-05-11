@@ -9,6 +9,7 @@ Built because viewing/editing personal Markdown notes from a code editor felt he
 - **Hybrid HTML / Markdown** — `.html` files are edited directly and stay viewable via `file://` (Chameleon-themed; switch theme without re-saving). `.md` files are converted to HTML on read and back to Markdown on save, so existing `.md` notes keep their format and remain `git diff`-friendly.
 - **Chameleon-compatible saved files** — Every saved `.html` follows the [Chameleon v1 theme contract](https://github.com/churin1116/html-chameleon), so a single theme switch (Chrome extension, `localStorage`, or `data-theme` attribute) repaints every file at once. The editor UI itself uses the same variables for visual parity.
 - **WYSIWYG editing** — TipTap 3.x with headings, lists, tables, links, code blocks, and more.
+- **Image uploads to Cloudflare R2** — Drag-and-drop or paste images into either editor; the file is uploaded to your R2 bucket and the public URL is inserted (as `<img>` in HTML, `![](url)` in Markdown). Optional — image uploads stay disabled until you configure R2 (see [Image uploads](#image-uploads)).
 - **Absolute paths via whitelist** — Edit files anywhere on disk. Allowed roots are managed from the sidebar (or directly in `config/allowed-roots.json`); arbitrary paths are rejected by the API. Supports `~/...` paths.
 - **External-edit conflict detection** — Captures `mtime` on open and rejects writes that would clobber concurrent changes (e.g., from VS Code or `git pull`).
 - **New file creation** — Sidebar `+ New` button creates an `.html` file under the chosen root.
@@ -177,6 +178,70 @@ Only the inner `<article id="content">` is editable; the surrounding template is
 ### `.md` files
 
 Stored as plain Markdown. Round-trip uses [`marked`](https://marked.js.org/) for read and [`turndown`](https://github.com/mixmark-io/turndown) for write. GFM features (tables, strikethrough, fenced code) are preserved; richer in-editor formatting that has no Markdown equivalent may be simplified.
+
+## Image uploads
+
+Drag an image onto either editor (or paste from the clipboard) and it is uploaded to your own Cloudflare R2 bucket. The returned public URL is inserted into the document as `<img src="...">` (HTML) or `![](...)` (Markdown), so saved files reference the cloud copy and stay in sync across devices.
+
+This is the only cloud dependency in the app — it is fully optional. If you skip setup, the editor still works; pastes/drops of images will surface a toast saying `/api/upload-image` is not configured.
+
+### Why R2
+
+- Free tier covers 10 GB storage — generous for personal notes.
+- Egress is free, so re-viewing the same images costs nothing regardless of how often you open the note.
+- S3-compatible API, so the implementation is a thin wrapper around `@aws-sdk/client-s3`.
+
+### Setup
+
+**1. Create the bucket.** On the Cloudflare dashboard, R2 → Create bucket → e.g. `html-editor-images`.
+
+**2. Allow public access.** Bucket → Settings → Public Access → "R2.dev subdomain" → Allow Access. Copy the `https://pub-xxxxxxxxxxxx.r2.dev` URL it shows.
+
+**3. Create a scoped API token.** R2 → Manage R2 API Tokens → Create **Account** API Token:
+
+- Permissions: `Object Read & Write`
+- Specify bucket: only `html-editor-images` (least privilege)
+- TTL: Forever
+
+Copy the Access Key ID and Secret Access Key. The secret is shown once.
+
+**4. Store the three secrets in macOS Keychain.** Namespaced with `HTML_EDITOR_` so they do not collide with R2 credentials used by other projects:
+
+```bash
+security add-generic-password -a "$USER" -s "R2_ACCOUNT_ID" -w 'your-account-id' -U
+security add-generic-password -a "$USER" -s "HTML_EDITOR_R2_ACCESS_KEY_ID" -w 'your-access-key-id' -U
+security add-generic-password -a "$USER" -s "HTML_EDITOR_R2_SECRET_ACCESS_KEY" -w 'your-secret-access-key' -U
+```
+
+`R2_ACCOUNT_ID` is the same Cloudflare account ID across projects, so it stays un-namespaced. If you already have it in Keychain from another project, skip that line.
+
+**5. Add the non-secret values to `.env.local`.** Copy `.env.example` to `.env.local` and fill in your bucket name and the public URL from step 2:
+
+```
+R2_BUCKET_NAME=html-editor-images
+R2_PUBLIC_URL=https://pub-xxxxxxxxxxxx.r2.dev
+```
+
+**6. Run `pnpm dev`.** The `dev` script runs through `scripts/with-r2-secrets.sh`, which reads the three Keychain entries and exports them as env vars before launching Next.js. Nothing sensitive ever touches disk in the repo.
+
+### How it works under the hood
+
+| File | Role |
+|------|------|
+| `scripts/with-r2-secrets.sh` | Reads Keychain via `security find-generic-password`, exports env vars, execs the wrapped command. |
+| `src/app/api/upload-image/route.ts` | POST endpoint; validates MIME / 25 MB max; uploads to R2; returns the public URL. |
+| `src/lib/r2.ts` | S3 client + `uploadImageToR2(bytes, mime)` helper. Generates `images/YYYY/MM/{uuid}.{ext}` keys with a 1-year immutable `Cache-Control`. |
+| `src/lib/upload-image.ts` | Client-side fetch wrapper + DataTransfer → `File[]` helper, shared by both editors. |
+| `src/components/editor.tsx` | TipTap `handlePaste` / `handleDrop` → insert `image` node. |
+| `src/components/md-editor.tsx` | CodeMirror `domEventHandlers` → insert `![alt](url)` at the drop / caret position. |
+
+### Allowed MIME types
+
+`image/png`, `image/jpeg`, `image/webp`, `image/gif`, `image/svg+xml`, `image/avif`. SVG is allowed because this tool is local-only — if you ever deploy it for multi-user use, narrow this list in `src/lib/r2.ts` first.
+
+### launchd note
+
+If you run the editor as a `launchd` agent (see [Always-on setup](#always-on-setup-macos)), the wrapper script is what `pnpm dev` invokes. It calls `/usr/bin/security` with a hardcoded path, so launchd's stripped PATH does not break Keychain lookups. No extra config is needed beyond the plist already documented below.
 
 ## Keyboard shortcuts
 
