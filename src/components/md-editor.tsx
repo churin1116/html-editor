@@ -1,9 +1,11 @@
 "use client";
 
+import { extractImageFilesFromDataTransfer, uploadImage } from "@/lib/upload-image";
 import { markdown } from "@codemirror/lang-markdown";
 import { EditorView } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
 import { type MutableRefObject, useEffect, useMemo } from "react";
+import { toast } from "sonner";
 
 export function MdEditor({
   content,
@@ -24,6 +26,23 @@ export function MdEditor({
     () => [
       markdown(),
       EditorView.lineWrapping,
+      EditorView.domEventHandlers({
+        paste: (event, view) => {
+          const files = extractImageFilesFromDataTransfer(event.clipboardData);
+          if (files.length === 0) return false;
+          event.preventDefault();
+          void uploadAndInsertMd(view, files);
+          return true;
+        },
+        drop: (event, view) => {
+          const files = extractImageFilesFromDataTransfer(event.dataTransfer);
+          if (files.length === 0) return false;
+          event.preventDefault();
+          const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+          void uploadAndInsertMd(view, files, pos ?? undefined);
+          return true;
+        },
+      }),
       EditorView.theme(
         {
           "&": {
@@ -50,12 +69,10 @@ export function MdEditor({
             outline: "none",
           },
           "&.cm-focused .cm-selectionBackground, ::selection": {
-            backgroundColor:
-              "color-mix(in srgb, var(--primary) 22%, transparent)",
+            backgroundColor: "color-mix(in srgb, var(--primary) 22%, transparent)",
           },
           ".cm-selectionBackground": {
-            backgroundColor:
-              "color-mix(in srgb, var(--primary) 18%, transparent)",
+            backgroundColor: "color-mix(in srgb, var(--primary) 18%, transparent)",
           },
           ".cm-line": { padding: "0 4px" },
           ".cm-gutters": { display: "none" },
@@ -109,4 +126,24 @@ export function MdEditor({
       />
     </div>
   );
+}
+
+async function uploadAndInsertMd(view: EditorView, files: File[], at?: number) {
+  for (const file of files) {
+    const toastId = toast.loading(`Uploading ${file.name || "image"}...`);
+    try {
+      const url = await uploadImage(file);
+      const alt = (file.name || "image").replace(/[\[\]]/g, "");
+      const markdownText = `![${alt}](${url})`;
+      const pos = at ?? view.state.selection.main.head;
+      view.dispatch({
+        changes: { from: pos, to: pos, insert: markdownText },
+        selection: { anchor: pos + markdownText.length },
+      });
+      toast.success("Image uploaded", { id: toastId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Upload failed";
+      toast.error(message, { id: toastId });
+    }
+  }
 }
