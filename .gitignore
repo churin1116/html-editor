@@ -45,5 +45,7 @@ next-env.d.ts
 !/.vscode/extensions.json
 !/.vscode/settings.recommended.json
 
-# project — user-specific config (paths differ per machine)
+# project — legacy location for user-specific config
+# (current install stores it at ~/.config/html-editor/allowed-roots.json,
+#  but this entry covers any leftover legacy file before migration ran)
 /config/allowed-roots.json

@@ -1,9 +1,10 @@
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { detectFormat, htmlToMd, mdToHtml } from "@/lib/format";
+import { detectFormat } from "@/lib/format";
 import { PathNotAllowedError, resolveSafePath } from "@/lib/fs-safe";
-import { isManagedHtml, unwrapContent, wrapContent } from "@/lib/html-template";
+import { wrapContent } from "@/lib/html-template";
+import { loadFileFromDisk } from "@/lib/load-file";
 
 export const dynamic = "force-dynamic";
 
@@ -13,51 +14,11 @@ export async function GET(req: Request) {
   if (!filePath) {
     return NextResponse.json({ error: "Missing 'path' query param" }, { status: 400 });
   }
-
-  try {
-    const { absolute } = await resolveSafePath(filePath);
-    const format = detectFormat(absolute);
-    if (!format) {
-      return NextResponse.json(
-        { error: "Unsupported file extension (expected .html or .md)" },
-        { status: 400 },
-      );
-    }
-    const raw = await readFile(absolute, "utf8");
-    const s = await stat(absolute);
-    const baseName = path.basename(absolute, path.extname(absolute));
-
-    let content: string;
-    let title: string;
-    let managed = true;
-    if (format === "html") {
-      const unwrapped = unwrapContent(raw);
-      content = unwrapped.content;
-      title = unwrapped.title || baseName;
-      managed = isManagedHtml(raw);
-    } else {
-      content = mdToHtml(raw);
-      title = baseName;
-    }
-
-    return NextResponse.json({
-      path: absolute,
-      format,
-      content,
-      title,
-      mtimeMs: s.mtimeMs,
-      managed,
-    });
-  } catch (err: unknown) {
-    if (err instanceof PathNotAllowedError) {
-      return NextResponse.json({ error: err.message }, { status: 403 });
-    }
-    const e = err as NodeJS.ErrnoException;
-    if (e.code === "ENOENT") {
-      return NextResponse.json({ error: "File not found" }, { status: 404 });
-    }
-    return NextResponse.json({ error: e.message ?? "Unknown error" }, { status: 500 });
+  const result = await loadFileFromDisk(filePath);
+  if ("error" in result) {
+    return NextResponse.json({ error: result.error }, { status: result.status });
   }
+  return NextResponse.json(result);
 }
 
 export async function PUT(req: Request) {
@@ -111,8 +72,7 @@ export async function PUT(req: Request) {
     if (format === "html") {
       toWrite = wrapContent(content, safeTitle);
     } else {
-      toWrite = htmlToMd(content);
-      if (!toWrite.endsWith("\n")) toWrite += "\n";
+      toWrite = content;
     }
 
     await writeFile(absolute, toWrite, "utf8");

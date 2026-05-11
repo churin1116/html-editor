@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -11,7 +11,31 @@ type Config = {
   roots: AllowedRoot[];
 };
 
-const CONFIG_PATH = path.resolve(process.cwd(), "config/allowed-roots.json");
+const CONFIG_DIR = path.join(homedir(), ".config", "html-editor");
+const CONFIG_PATH = path.join(CONFIG_DIR, "allowed-roots.json");
+const LEGACY_CONFIG_PATH = path.resolve(process.cwd(), "config/allowed-roots.json");
+
+async function migrateLegacyIfPresent(): Promise<void> {
+  // If the new-location file already exists, nothing to do.
+  try {
+    await stat(CONFIG_PATH);
+    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") return;
+  }
+  // New location missing — fall back to legacy if present.
+  try {
+    await stat(LEGACY_CONFIG_PATH);
+  } catch {
+    return;
+  }
+  try {
+    await mkdir(CONFIG_DIR, { recursive: true });
+    await rename(LEGACY_CONFIG_PATH, CONFIG_PATH);
+  } catch {
+    /* ignore — user can re-add manually */
+  }
+}
 
 export function expandPath(input: string): string {
   let p = input.trim();
@@ -21,6 +45,7 @@ export function expandPath(input: string): string {
 }
 
 export async function loadAllowedRoots(): Promise<AllowedRoot[]> {
+  await migrateLegacyIfPresent();
   try {
     const raw = await readFile(CONFIG_PATH, "utf8");
     const parsed = JSON.parse(raw) as Config;
@@ -37,7 +62,12 @@ export async function loadAllowedRoots(): Promise<AllowedRoot[]> {
 }
 
 export async function saveAllowedRoots(roots: AllowedRoot[]): Promise<void> {
+  await mkdir(CONFIG_DIR, { recursive: true });
   const config: Config = { roots };
   const json = `${JSON.stringify(config, null, 2)}\n`;
   await writeFile(CONFIG_PATH, json, "utf8");
+}
+
+export function getConfigPath(): string {
+  return CONFIG_PATH;
 }

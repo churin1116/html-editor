@@ -1,6 +1,6 @@
 # html-editor
 
-A local-first WYSIWYG editor for `.html` and `.md` files anywhere on your disk. Run `pnpm dev`, point your browser at `localhost:3000`, and edit files from any directory you whitelist — without opening a code editor.
+A local-first WYSIWYG editor for `.html` and `.md` files anywhere on your disk. Run `pnpm dev`, point your browser at `localhost:26509`, and edit files from any directory you whitelist — without opening a code editor.
 
 Built because viewing/editing personal Markdown notes from a code editor felt heavy when all you wanted was a bookmarkable URL and rich-text editing.
 
@@ -25,10 +25,99 @@ cp config/allowed-roots.example.json config/allowed-roots.json
 # Edit config/allowed-roots.json with absolute paths
 
 pnpm dev
-# Open http://localhost:3000 (and bookmark it)
+# Open http://localhost:26509 (and bookmark it)
 ```
 
 Requires Node.js 20+ and pnpm 9+.
+
+## Always-on setup (macOS)
+
+For one-click daily access, run the editor as a background `launchd` agent that auto-starts on login and restarts if it crashes. After setup, just double-click the desktop shortcut.
+
+The `dev` / `start` scripts default to port **`26509`** (chosen to avoid conflicts with common dev ports). Change in `package.json` if you want a different port.
+
+### 1. Create the launchd agent
+
+Save the following as `~/Library/LaunchAgents/com.<you>.html-editor.plist`, replacing paths and `<you>` to match your setup. Get your pnpm path with `which pnpm`.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.you.html-editor</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/absolute/path/to/pnpm</string>
+    <string>dev</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/absolute/path/to/this/repo</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/YOU/Library/Logs/html-editor/stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/Library/Logs/html-editor/stderr.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/dir/containing/pnpm:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>/Users/YOU</string>
+  </dict>
+</dict>
+</plist>
+```
+
+### 2. Load and verify
+
+```bash
+mkdir -p ~/Library/Logs/html-editor
+launchctl load -w ~/Library/LaunchAgents/com.you.html-editor.plist
+launchctl list | grep html-editor                            # shows a PID + exit code 0
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:26509/   # prints 200
+```
+
+### 3. Desktop shortcut
+
+Save as `~/Desktop/HTML Editor.webloc`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>URL</key>
+  <string>http://localhost:26509</string>
+</dict>
+</plist>
+```
+
+Drag the `.webloc` onto the Dock (right side, near the Trash) for a permanent one-click launcher.
+
+### Operations
+
+```bash
+# Stop the agent
+launchctl unload ~/Library/LaunchAgents/com.you.html-editor.plist
+
+# Start it again
+launchctl load -w ~/Library/LaunchAgents/com.you.html-editor.plist
+
+# Restart (e.g., dev server got sluggish)
+launchctl kickstart -k gui/$(id -u)/com.you.html-editor
+
+# Tail logs
+tail -f ~/Library/Logs/html-editor/stderr.log
+```
+
+Since the agent runs `pnpm dev`, code changes hot-reload automatically — no `pnpm build` step needed in normal use.
 
 ## Configuration
 
@@ -36,7 +125,7 @@ There are two ways to register the directories the editor can read or write:
 
 **Via the GUI (recommended).** When you start with no roots configured, the sidebar shows an "Add your first root" button. Once you have at least one root, an "+ Add root" link appears next to the heading; the × button on each root removes it. The path field accepts both absolute paths and `~`-prefixed paths (`~/notes` → `/Users/you/notes`). The server validates that the path exists and is a directory before saving.
 
-**Via `config/allowed-roots.json` directly.** The GUI persists to the same file:
+**Via the JSON file directly.** Roots persist to `~/.config/html-editor/allowed-roots.json` (XDG-style, outside the project tree so a `git clean` or fresh clone never wipes your roots):
 
 ```json
 {
@@ -55,7 +144,8 @@ There are two ways to register the directories the editor can read or write:
 
 - `label` — display name in the sidebar
 - `path` — absolute path; only files under this directory (recursively) can be opened or saved
-- The file is per-machine and is `.gitignore`d. An example template ships at `config/allowed-roots.example.json`.
+- The file is per-user, never tracked by git. An example template ships at `config/allowed-roots.example.json`.
+- Legacy installs (older versions stored the file at `<repo>/config/allowed-roots.json`) are migrated to the new location on first launch.
 
 ## How files are stored
 
@@ -104,7 +194,7 @@ For links, use the **Link** button in the toolbar (it opens a URL prompt). Other
 This is a **local-only** tool. It is deliberately not safe to expose on a network.
 
 - File access is gated by `config/allowed-roots.json`. The API resolves every requested path with `path.resolve` and verifies it lives under one of the allowed roots; anything else returns `403`.
-- There is no authentication. The dev server binds to `localhost:3000` — do not bind it to a public interface or expose it via a tunnel without adding auth.
+- There is no authentication. The dev server binds to `localhost:26509` — do not bind it to a public interface or expose it via a tunnel without adding auth.
 - The user-specific `config/allowed-roots.json` is `.gitignore`d so paths never leak into the repo.
 
 ## Architecture
