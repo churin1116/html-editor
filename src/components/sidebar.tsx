@@ -1,31 +1,56 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ACTIONS,
+  type ActionIcon,
+  type ActionId,
+  type EditorMode,
+} from "@/lib/editor-actions";
 
 type AllowedRoot = { label: string; path: string };
+type Shortcut = { path: string };
 type TreeEntry = {
   name: string;
   path: string;
   type: "file" | "directory";
   children?: TreeEntry[];
 };
+type ContextMenuState = { x: number; y: number; path: string };
 
 export function Sidebar({
   selectedPath,
   onSelect,
   refreshKey,
   onCreated,
+  mode,
+  onApply,
 }: {
   selectedPath: string | null;
   onSelect: (path: string) => void;
   refreshKey: number;
   onCreated: (path: string) => void;
+  mode: EditorMode | null;
+  onApply: (id: ActionId) => void;
 }) {
   const [roots, setRoots] = useState<AllowedRoot[]>([]);
   const [trees, setTrees] = useState<Record<string, TreeEntry[]>>({});
   const [rootErrors, setRootErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [collapsedRoots, setCollapsedRoots] = useState<Record<string, boolean>>({});
+  const [shortcuts, setShortcuts] = useState<Shortcut[]>([]);
+  const [shortcutsCollapsed, setShortcutsCollapsed] = useState(false);
+  const [showAddShortcutForm, setShowAddShortcutForm] = useState(false);
+
+  const openContextMenu = useCallback((x: number, y: number, path: string) => {
+    setContextMenu({ x, y, path });
+  }, []);
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+  const toggleRoot = useCallback((rootPath: string) => {
+    setCollapsedRoots((prev) => ({ ...prev, [rootPath]: !prev[rootPath] }));
+  }, []);
 
   const fetchRoots = useCallback(async () => {
     try {
@@ -37,9 +62,20 @@ export function Sidebar({
     }
   }, []);
 
+  const fetchShortcuts = useCallback(async () => {
+    try {
+      const r = await fetch("/api/shortcuts");
+      const data = await r.json();
+      setShortcuts(data.shortcuts ?? []);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
   useEffect(() => {
     fetchRoots();
-  }, [fetchRoots]);
+    fetchShortcuts();
+  }, [fetchRoots, fetchShortcuts]);
 
   const reloadTree = useCallback(async (rootPath: string) => {
     try {
@@ -66,6 +102,42 @@ export function Sidebar({
   useEffect(() => {
     for (const root of roots) reloadTree(root.path);
   }, [roots, reloadTree, refreshKey]);
+
+  // Live tree updates via SSE: refresh affected root when external add/unlink happens
+  useEffect(() => {
+    if (roots.length === 0) return;
+    const es = new EventSource("/api/watch");
+    const pending = new Set<string>();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => {
+      timer = null;
+      const targets = Array.from(pending);
+      pending.clear();
+      for (const r of targets) reloadTree(r);
+    };
+    es.onmessage = (ev) => {
+      let data: { event?: string; root?: string };
+      try {
+        data = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+      if (
+        data.event !== "add" &&
+        data.event !== "unlink" &&
+        data.event !== "addDir" &&
+        data.event !== "unlinkDir"
+      )
+        return;
+      if (data.root) pending.add(data.root);
+      else for (const r of roots) pending.add(r.path);
+      if (!timer) timer = setTimeout(flush, 200);
+    };
+    return () => {
+      if (timer) clearTimeout(timer);
+      es.close();
+    };
+  }, [roots, reloadTree]);
 
   const handleNewFile = useCallback(
     async (rootPath: string) => {
@@ -107,6 +179,43 @@ export function Sidebar({
     [],
   );
 
+  const handleAddShortcut = useCallback(
+    async (rawPath: string) => {
+      const res = await fetch("/api/shortcuts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: rawPath }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return data.error
+          ? `${data.error}${data.path ? ` (${data.path})` : ""}`
+          : "Failed";
+      }
+      setShortcuts(data.shortcuts ?? []);
+      setShowAddShortcutForm(false);
+      return null;
+    },
+    [],
+  );
+
+  const handleRemoveShortcut = useCallback(async (shortcutPath: string) => {
+    const ok = window.confirm(
+      "Remove this shortcut?\nThe file on disk is not deleted.",
+    );
+    if (!ok) return;
+    const res = await fetch(
+      `/api/shortcuts?path=${encodeURIComponent(shortcutPath)}`,
+      { method: "DELETE" },
+    );
+    const data = await res.json();
+    if (!res.ok) {
+      window.alert(`Failed: ${data.error}`);
+      return;
+    }
+    setShortcuts(data.shortcuts ?? []);
+  }, []);
+
   const handleRemoveRoot = useCallback(
     async (rootPath: string, label: string) => {
       const ok = window.confirm(
@@ -140,11 +249,72 @@ export function Sidebar({
   const isEmpty = roots.length === 0;
 
   return (
-    <div className="text-sm overflow-y-auto h-full">
+    <div className="text-sm h-full flex flex-col">
+      <div className="flex-1 overflow-y-auto">
       {isEmpty && !showAddForm && <EmptyState onAdd={() => setShowAddForm(true)} />}
 
       {!isEmpty && (
-        <div className="flex items-center justify-between px-5 pt-5 pb-3">
+        <div className="px-3 pt-4 pb-1 group/shortcuts">
+          <div className="flex items-center justify-between px-2 mb-1.5 gap-2">
+            <button
+              type="button"
+              onClick={() => setShortcutsCollapsed((v) => !v)}
+              className="flex items-center gap-1 min-w-0 flex-1 text-left tree-root-toggle"
+              aria-expanded={!shortcutsCollapsed}
+            >
+              <span
+                className={`tree-dir-chevron ${!shortcutsCollapsed ? "is-open" : ""}`}
+              >
+                <ChevronIcon />
+              </span>
+              <span className="text-[12px] font-medium text-[var(--text-muted)] truncate tracking-tight">
+                Shortcuts
+              </span>
+            </button>
+            <div className="flex items-center gap-0.5 opacity-0 group-hover/shortcuts:opacity-100 transition-opacity duration-150 flex-shrink-0">
+              <IconBtn
+                onClick={() => {
+                  setShortcutsCollapsed(false);
+                  setShowAddShortcutForm(true);
+                }}
+                title="Add shortcut"
+              >
+                <PlusIcon />
+              </IconBtn>
+            </div>
+          </div>
+          {!shortcutsCollapsed && (
+            <>
+              {showAddShortcutForm && (
+                <div className="px-2 mb-2">
+                  <AddShortcutForm
+                    onCancel={() => setShowAddShortcutForm(false)}
+                    onSubmit={handleAddShortcut}
+                  />
+                </div>
+              )}
+              {shortcuts.length === 0 && !showAddShortcutForm && (
+                <div className="px-4 py-1.5 text-[11px] text-[var(--text-subtle)] leading-relaxed">
+                  Add absolute paths to reach files anywhere.
+                </div>
+              )}
+              {shortcuts.map((s) => (
+                <ShortcutItem
+                  key={s.path}
+                  shortcut={s}
+                  isSelected={selectedPath === s.path}
+                  onSelect={onSelect}
+                  onContextMenu={openContextMenu}
+                  onRemove={handleRemoveShortcut}
+                />
+              ))}
+            </>
+          )}
+        </div>
+      )}
+
+      {!isEmpty && (
+        <div className="flex items-center justify-between px-5 pt-3 pb-3">
           <span className="section-label">Roots</span>
           {!showAddForm && (
             <button
@@ -169,49 +339,214 @@ export function Sidebar({
       )}
 
       <div className="px-3 pb-6">
-        {roots.map((root) => (
-          <div key={root.path} className="mb-5 group">
-            <div className="flex items-center justify-between px-2 mb-1.5">
-              <span className="text-[12px] font-medium text-[var(--text-muted)] truncate tracking-tight">
-                {root.label}
-              </span>
-              <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-                <IconBtn onClick={() => handleNewFile(root.path)} title="New HTML file">
-                  <PlusIcon />
-                </IconBtn>
-                <IconBtn
-                  onClick={() => handleRemoveRoot(root.path, root.label)}
-                  title="Remove root from list"
+        {roots.map((root) => {
+          const isOpen = !collapsedRoots[root.path];
+          return (
+            <div key={root.path} className="mb-5 group">
+              <div className="flex items-center justify-between px-2 mb-1.5 gap-2">
+                <button
+                  type="button"
+                  onClick={() => toggleRoot(root.path)}
+                  className="flex items-center gap-1 min-w-0 flex-1 text-left tree-root-toggle"
+                  aria-expanded={isOpen}
                 >
-                  <CloseIcon />
-                </IconBtn>
-              </div>
-            </div>
-            {rootErrors[root.path] ? (
-              <div className="mx-2 px-3 py-2.5 text-[11.5px] text-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] rounded-md">
-                <div className="font-medium mb-0.5">{rootErrors[root.path]}</div>
-                <div className="text-[var(--text-muted)] break-all font-mono text-[10.5px]">
-                  {root.path}
+                  <span className={`tree-dir-chevron ${isOpen ? "is-open" : ""}`}>
+                    <ChevronIcon />
+                  </span>
+                  <span className="text-[12px] font-medium text-[var(--text-muted)] truncate tracking-tight">
+                    {root.label}
+                  </span>
+                </button>
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 flex-shrink-0">
+                  <IconBtn onClick={() => handleNewFile(root.path)} title="New HTML file">
+                    <PlusIcon />
+                  </IconBtn>
+                  <IconBtn
+                    onClick={() => handleRemoveRoot(root.path, root.label)}
+                    title="Remove root from list"
+                  >
+                    <CloseIcon />
+                  </IconBtn>
                 </div>
               </div>
-            ) : (
-              <TreeView
-                entries={trees[root.path] ?? []}
-                selectedPath={selectedPath}
-                onSelect={onSelect}
-                depth={0}
-              />
-            )}
-          </div>
-        ))}
+              {isOpen && (
+                rootErrors[root.path] ? (
+                  <div className="mx-2 px-3 py-2.5 text-[11.5px] text-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] rounded-md">
+                    <div className="font-medium mb-0.5">{rootErrors[root.path]}</div>
+                    <div className="text-[var(--text-muted)] break-all font-mono text-[10.5px]">
+                      {root.path}
+                    </div>
+                  </div>
+                ) : (
+                  <TreeView
+                    entries={trees[root.path] ?? []}
+                    selectedPath={selectedPath}
+                    onSelect={onSelect}
+                    onContextMenu={openContextMenu}
+                    depth={0}
+                  />
+                )
+              )}
+            </div>
+          );
+        })}
       </div>
+      </div>
+      <div className="border-t border-[var(--border-subtle)] px-3 py-2 flex items-center">
+        <HelpButton mode={mode} onApply={onApply} />
+      </div>
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          path={contextMenu.path}
+          onClose={closeContextMenu}
+        />
+      )}
     </div>
+  );
+}
+
+function HelpButton({
+  mode,
+  onApply,
+}: {
+  mode: EditorMode | null;
+  onApply: (id: ActionId) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const items = mode ? ACTIONS.filter((a) => a.supports.includes(mode)) : [];
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center justify-center w-7 h-7 rounded-md text-[var(--text-subtle)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+        title="操作一覧"
+        aria-label="操作一覧を表示"
+        aria-expanded={open}
+      >
+        <QuestionIcon />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute bottom-full left-0 mb-2 min-w-[260px] py-1.5 rounded-md fade-in z-40 overflow-y-auto"
+          style={{
+            background: "var(--surface)",
+            border: "1px solid var(--border-subtle)",
+            boxShadow:
+              "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)",
+            maxHeight: "min(70vh, 560px)",
+          }}
+        >
+          <div className="px-3 pb-1.5 pt-0.5 text-[10.5px] tracking-[0.08em] uppercase text-[var(--text-subtle)]">
+            操作一覧
+          </div>
+          {items.length === 0 ? (
+            <div className="px-3 py-2 text-[11.5px] text-[var(--text-subtle)] leading-relaxed">
+              ファイルを開くと操作一覧が表示されます。
+            </div>
+          ) : (
+            items.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  onApply(a.id);
+                  setOpen(false);
+                }}
+                className="w-full flex items-center justify-between gap-3 px-3 py-1.5 text-left text-[12px] text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+              >
+                <span className="flex items-center gap-2 min-w-0">
+                  {a.icon && (
+                    <span
+                      className="text-[var(--text-muted)] flex-shrink-0"
+                      aria-hidden="true"
+                    >
+                      <ActionIconSvg icon={a.icon} />
+                    </span>
+                  )}
+                  <span className="font-mono truncate">{a.label}</span>
+                </span>
+                {a.hint && (
+                  <span className="text-[10.5px] text-[var(--text-subtle)] font-mono flex-shrink-0">
+                    {a.hint}
+                  </span>
+                )}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActionIconSvg({ icon }: { icon: ActionIcon }) {
+  if (icon === "table") {
+    return (
+      <svg
+        width="12"
+        height="12"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <rect x="2.2" y="3.6" width="11.6" height="8.8" rx="0.8" />
+        <path d="M2.2 7h11.6M2.2 10h11.6M6 3.6v8.8M10 3.6v8.8" />
+      </svg>
+    );
+  }
+  return null;
+}
+
+function QuestionIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="8" r="6.4" />
+      <path d="M6.2 6.2a1.8 1.8 0 0 1 3.6 0c0 1.1-1.4 1.2-1.8 2-.1.2-.2.5-.2.8" />
+      <circle cx="8" cy="11.5" r="0.45" fill="currentColor" stroke="none" />
+    </svg>
   );
 }
 
 function EmptyState({ onAdd }: { onAdd: () => void }) {
   return (
-    <div className="px-6 pt-16 pb-10 text-center welcome-fade-in">
+    <div className="px-6 pt-16 pb-10 text-center">
       <div
         className="text-[28px] font-light leading-none mb-3 text-[var(--text)]"
         style={{ letterSpacing: "-0.025em" }}
@@ -386,11 +721,13 @@ function TreeView({
   entries,
   selectedPath,
   onSelect,
+  onContextMenu,
   depth,
 }: {
   entries: TreeEntry[];
   selectedPath: string | null;
   onSelect: (path: string) => void;
+  onContextMenu: (x: number, y: number, path: string) => void;
   depth: number;
 }) {
   return (
@@ -402,6 +739,7 @@ function TreeView({
               entry={entry}
               selectedPath={selectedPath}
               onSelect={onSelect}
+              onContextMenu={onContextMenu}
               depth={depth}
             />
           ) : (
@@ -409,6 +747,7 @@ function TreeView({
               entry={entry}
               selectedPath={selectedPath}
               onSelect={onSelect}
+              onContextMenu={onContextMenu}
               depth={depth}
             />
           )}
@@ -422,11 +761,13 @@ function DirectoryNode({
   entry,
   selectedPath,
   onSelect,
+  onContextMenu,
   depth,
 }: {
   entry: TreeEntry;
   selectedPath: string | null;
   onSelect: (path: string) => void;
+  onContextMenu: (x: number, y: number, path: string) => void;
   depth: number;
 }) {
   const [open, setOpen] = useState(true);
@@ -450,6 +791,7 @@ function DirectoryNode({
           entries={entry.children}
           selectedPath={selectedPath}
           onSelect={onSelect}
+          onContextMenu={onContextMenu}
           depth={depth + 1}
         />
       )}
@@ -461,11 +803,13 @@ function FileNode({
   entry,
   selectedPath,
   onSelect,
+  onContextMenu,
   depth,
 }: {
   entry: TreeEntry;
   selectedPath: string | null;
   onSelect: (path: string) => void;
+  onContextMenu: (x: number, y: number, path: string) => void;
   depth: number;
 }) {
   const isSelected = selectedPath === entry.path;
@@ -476,12 +820,259 @@ function FileNode({
     <button
       type="button"
       onClick={() => onSelect(entry.path)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onContextMenu(e.clientX, e.clientY, entry.path);
+      }}
       className={`tree-item ${isSelected ? "is-selected" : ""}`}
       style={{ paddingLeft: `${depth * 12 + 14}px` }}
       title={entry.path}
     >
+      <span
+        className={`file-icon ${isMd ? "file-icon-md" : "file-icon-html"} flex-shrink-0`}
+        aria-hidden="true"
+      >
+        {isMd ? <MdIcon /> : <HtmlIcon />}
+      </span>
       <span className="truncate flex-1">{display}</span>
-      <span className="fmt-chip">{isMd ? "md" : "html"}</span>
     </button>
+  );
+}
+
+function HtmlIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M5 4.5L1.8 8l3.2 3.5" />
+      <path d="M11 4.5l3.2 3.5-3.2 3.5" />
+      <path d="M9.4 3.4l-2.8 9.2" />
+    </svg>
+  );
+}
+
+function MdIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect x="1.4" y="3.6" width="13.2" height="8.8" rx="1.2" />
+      <path d="M3.5 10.2V6.2l1.5 2 1.5-2v4" />
+      <path d="M10.5 6.5v3.4" />
+      <path d="M9 8.6l1.5 1.5L12 8.6" />
+    </svg>
+  );
+}
+
+function ShortcutItem({
+  shortcut,
+  isSelected,
+  onSelect,
+  onContextMenu,
+  onRemove,
+}: {
+  shortcut: Shortcut;
+  isSelected: boolean;
+  onSelect: (path: string) => void;
+  onContextMenu: (x: number, y: number, path: string) => void;
+  onRemove: (path: string) => void;
+}) {
+  const name = shortcut.path.split("/").pop() ?? shortcut.path;
+  const ext = name.match(/\.(html?|md|markdown)$/i)?.[1].toLowerCase() ?? "";
+  const display = name.replace(/\.(html?|md|markdown)$/i, "");
+  const isMd = ext === "md" || ext === "markdown";
+  return (
+    <div className="relative group/shortcut">
+      <button
+        type="button"
+        onClick={() => onSelect(shortcut.path)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onContextMenu(e.clientX, e.clientY, shortcut.path);
+        }}
+        className={`tree-item ${isSelected ? "is-selected" : ""}`}
+        style={{ paddingLeft: "14px", paddingRight: "28px" }}
+        title={shortcut.path}
+      >
+        <span
+          className={`file-icon ${isMd ? "file-icon-md" : "file-icon-html"} flex-shrink-0`}
+          aria-hidden="true"
+        >
+          {isMd ? <MdIcon /> : <HtmlIcon />}
+        </span>
+        <span className="truncate flex-1">{display}</span>
+      </button>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove(shortcut.path);
+        }}
+        title="Remove shortcut"
+        aria-label="Remove shortcut"
+        className="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-opacity opacity-0 group-hover/shortcut:opacity-100"
+      >
+        <CloseIcon />
+      </button>
+    </div>
+  );
+}
+
+function AddShortcutForm({
+  onCancel,
+  onSubmit,
+}: {
+  onCancel: () => void;
+  onSubmit: (path: string) => Promise<string | null>;
+}) {
+  const [path, setPath] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setErr(null);
+    if (!path.trim()) {
+      setErr("Path is required");
+      return;
+    }
+    setSubmitting(true);
+    const result = await onSubmit(path.trim());
+    setSubmitting(false);
+    if (result) {
+      setErr(result);
+    } else {
+      setPath("");
+    }
+  }
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="px-3 py-3 bg-[var(--surface-2)] rounded-lg fade-in"
+    >
+      <input
+        type="text"
+        value={path}
+        onChange={(e) => setPath(e.target.value)}
+        placeholder="/absolute/path/to/file.html"
+        spellCheck={false}
+        autoCapitalize="off"
+        autoComplete="off"
+        autoFocus
+        className="input-line font-mono mb-3"
+        style={{ fontSize: "12px" }}
+      />
+      {err && (
+        <div className="text-[11.5px] text-[var(--danger)] mb-3 leading-relaxed">
+          {err}
+        </div>
+      )}
+      <div className="flex items-center gap-3">
+        <button
+          type="submit"
+          disabled={submitting}
+          className="btn-save-active disabled:opacity-40"
+        >
+          {submitting ? "Adding…" : "Add"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-[12px] text-[var(--text-subtle)] hover:text-[var(--text)] transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function ContextMenu({
+  x,
+  y,
+  path,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  path: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    const handleAway = () => onClose();
+    document.addEventListener("keydown", handleKey);
+    document.addEventListener("click", handleAway);
+    document.addEventListener("contextmenu", handleAway);
+    document.addEventListener("scroll", handleAway, true);
+    window.addEventListener("blur", handleAway);
+    return () => {
+      document.removeEventListener("keydown", handleKey);
+      document.removeEventListener("click", handleAway);
+      document.removeEventListener("contextmenu", handleAway);
+      document.removeEventListener("scroll", handleAway, true);
+      window.removeEventListener("blur", handleAway);
+    };
+  }, [onClose]);
+
+  const handleCopyPath = async () => {
+    try {
+      await navigator.clipboard.writeText(path);
+    } catch {
+      // Clipboard may be blocked (e.g., insecure context); silently ignore.
+    }
+    onClose();
+  };
+
+  const MENU_W = 180;
+  const MENU_H = 44;
+  const left = Math.min(x, window.innerWidth - MENU_W - 8);
+  const top = Math.min(y, window.innerHeight - MENU_H - 8);
+
+  return (
+    <div
+      role="menu"
+      className="fixed z-50 min-w-[170px] py-1 rounded-md fade-in"
+      style={{
+        left,
+        top,
+        background: "var(--surface)",
+        border: "1px solid var(--border-subtle)",
+        boxShadow: "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)",
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+    >
+      <button
+        type="button"
+        role="menuitem"
+        onClick={handleCopyPath}
+        className="w-full text-left px-3 py-1.5 text-[12px] text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+      >
+        パスをコピー
+      </button>
+    </div>
   );
 }

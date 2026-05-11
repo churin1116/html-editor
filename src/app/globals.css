@@ -1,5 +1,6 @@
 @import "tailwindcss";
-@import url("https://churin1116.github.io/html-chameleon/theme/v1/theme.css");
+/* Chameleon v1 theme is loaded via <link> in layout.tsx to keep
+   @import semantics intact across Tailwind/PostCSS processing. */
 
 html, body {
   height: 100%;
@@ -22,12 +23,6 @@ button { font-family: inherit; }
   letter-spacing: -0.02em;
   font-size: 1.0625rem;
   color: var(--text);
-}
-.wordmark::before {
-  content: "·";
-  margin: 0 0.35em;
-  color: var(--text-subtle);
-  font-weight: 200;
 }
 
 .section-label {
@@ -83,6 +78,22 @@ button { font-family: inherit; }
   border-radius: 0 1px 1px 0;
 }
 
+.file-icon {
+  display: inline-flex;
+  width: 13px;
+  height: 13px;
+  transition: opacity 120ms ease;
+}
+.file-icon-html {
+  color: color-mix(in srgb, var(--warning) 55%, var(--text-subtle));
+}
+.file-icon-md {
+  color: color-mix(in srgb, var(--primary) 55%, var(--text-subtle));
+}
+.tree-item:hover .file-icon {
+  opacity: 0.85;
+}
+
 .tree-dir {
   display: flex;
   align-items: center;
@@ -113,6 +124,22 @@ button { font-family: inherit; }
 }
 .tree-dir-chevron.is-open {
   transform: rotate(90deg);
+}
+
+.tree-root-toggle {
+  background: transparent;
+  border: 0;
+  padding: 2px 4px;
+  margin-left: -4px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.tree-root-toggle:hover {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+.tree-root-toggle:hover .tree-dir-chevron {
+  color: var(--text-muted);
 }
 
 /* ============================================================
@@ -174,8 +201,12 @@ button { font-family: inherit; }
 .input-line {
   width: 100%;
   background: transparent;
-  border: 0;
-  border-bottom: 1px solid var(--border);
+  border-top-width: 0;
+  border-right-width: 0;
+  border-left-width: 0;
+  border-bottom-width: 1px;
+  border-style: solid;
+  border-color: var(--border);
   padding: 7px 0;
   font-size: 13px;
   color: var(--text);
@@ -201,7 +232,9 @@ button { font-family: inherit; }
   font-size: 12.5px;
   font-weight: 500;
   letter-spacing: 0.01em;
-  border: 1px solid var(--primary);
+  border-width: 1px;
+  border-style: solid;
+  border-color: var(--primary);
   cursor: pointer;
   transition: background 120ms ease, transform 80ms ease;
 }
@@ -221,7 +254,9 @@ button { font-family: inherit; }
   font-size: 12.5px;
   font-weight: 500;
   letter-spacing: 0.01em;
-  border: 1px solid var(--border-subtle);
+  border-width: 1px;
+  border-style: solid;
+  border-color: var(--border-subtle);
   cursor: not-allowed;
 }
 
@@ -231,7 +266,9 @@ button { font-family: inherit; }
   padding: 5px 10px;
   border-radius: 5px;
   font-size: 12px;
-  border: 1px solid var(--border);
+  border-width: 1px;
+  border-style: solid;
+  border-color: var(--border);
   cursor: pointer;
   transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
 }
@@ -263,7 +300,9 @@ button { font-family: inherit; }
 .tiptap p { margin: 0.85em 0; }
 .tiptap ul, .tiptap ol { padding-left: 1.5em; margin: 0.85em 0; }
 .tiptap blockquote {
-  border-left: 2px solid var(--border-strong);
+  border-left-width: 2px;
+  border-left-style: solid;
+  border-left-color: var(--border-strong);
   padding-left: 1em;
   color: var(--text-muted);
   margin: 1.6em 0;
@@ -296,7 +335,7 @@ button { font-family: inherit; }
 }
 .tiptap a:hover { text-decoration-color: var(--text); }
 .tiptap table { border-collapse: collapse; width: 100%; margin: 1.5em 0; font-size: 14px; }
-.tiptap th, .tiptap td { border: 1px solid var(--border-subtle); padding: 0.6em 0.85em; text-align: left; }
+.tiptap th, .tiptap td { border-width: 1px; border-style: solid; border-color: var(--border-subtle); padding: 0.6em 0.85em; text-align: left; }
 .tiptap th { font-weight: 600; background: var(--surface); }
 .tiptap img { max-width: 100%; height: auto; border-radius: 6px; }
 .tiptap hr { border: 0; height: 1px; background: var(--border); margin: 2.5em 0; }
@@ -318,12 +357,6 @@ button { font-family: inherit; }
   to   { opacity: 1; transform: translateY(0); }
 }
 .fade-in { animation: editor-fade-in 240ms ease both; }
-
-@keyframes ws-fade-in {
-  from { opacity: 0; transform: translateY(8px); letter-spacing: 0.02em; }
-  to   { opacity: 1; transform: translateY(0); letter-spacing: -0.025em; }
-}
-.welcome-fade-in { animation: ws-fade-in 600ms cubic-bezier(0.16, 1, 0.3, 1) both; }
 
 /* ============================================================
    Misc
