@@ -1,18 +1,19 @@
 "use client";
 
-import type { EditorView } from "@codemirror/view";
-import type { Editor as TiptapEditor } from "@tiptap/react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
 import { Editor } from "@/components/editor";
 import { MdEditor } from "@/components/md-editor";
 import { Sidebar } from "@/components/sidebar";
 import {
   type ActionId,
+  type EditorMode,
   applyHtmlAction,
   applyMdAction,
-  type EditorMode,
 } from "@/lib/editor-actions";
+import { PROSE_CSS } from "@/lib/prose-css";
+import type { EditorView } from "@codemirror/view";
+import type { Editor as TiptapEditor } from "@tiptap/react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 
 type LoadedFile = {
   path: string;
@@ -24,20 +25,28 @@ type LoadedFile = {
 };
 
 const LAST_PATH_COOKIE = "lastSelectedPath";
+const SIDEBAR_OPEN_COOKIE = "sidebarOpen";
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
 
 export function EditorShell({
   initialSelected,
   initialFile,
+  initialSidebarOpen = true,
 }: {
   initialSelected: string | null;
   initialFile: LoadedFile | null;
+  initialSidebarOpen?: boolean;
 }) {
   const [selected, setSelected] = useState<string | null>(initialSelected);
   const [file, setFile] = useState<LoadedFile | null>(initialFile);
   const [draft, setDraft] = useState<string>(initialFile?.content ?? "");
   const [dirty, setDirty] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [sidebarOpen, setSidebarOpen] = useState(initialSidebarOpen);
+
+  useEffect(() => {
+    document.cookie = `${SIDEBAR_OPEN_COOKIE}=${sidebarOpen ? "1" : "0"}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`;
+  }, [sidebarOpen]);
   const mdViewRef = useRef<EditorView | null>(null);
   const htmlEditorRef = useRef<TiptapEditor | null>(null);
 
@@ -191,29 +200,27 @@ export function EditorShell({
   }, []);
 
   return (
-    <div className="grid grid-cols-[300px_1fr] h-screen">
-      <aside className="border-r border-[var(--border-subtle)] bg-[var(--surface)] overflow-hidden flex flex-col">
+    <div
+      className="grid h-screen transition-[grid-template-columns] duration-200 ease-out"
+      style={{ gridTemplateColumns: sidebarOpen ? "300px 1fr" : "0px 1fr" }}
+    >
+      {/* biome-ignore lint/security/noDangerouslySetInnerHtml: PROSE_CSS is a static module-level constant. */}
+      <style dangerouslySetInnerHTML={{ __html: PROSE_CSS }} />
+      <aside
+        className={`bg-[var(--surface)] overflow-hidden flex flex-col ${sidebarOpen ? "border-r border-[var(--border-subtle)]" : ""}`}
+        aria-hidden={!sidebarOpen}
+      >
         <header className="flex items-center justify-between pl-5 pr-3 pt-4 pb-3">
           <div className="wordmark lowercase">html · editor</div>
-          <a
-            href="https://github.com/churin1116/html-editor"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center justify-center w-7 h-7 rounded-md hover:bg-[var(--surface-2)] transition-colors"
-            style={{ color: "var(--text)" }}
-            title="View source on GitHub"
-            aria-label="View source on GitHub"
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(false)}
+            className="inline-flex items-center justify-center w-7 h-7 rounded-md text-[var(--text-subtle)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+            title="Collapse sidebar"
+            aria-label="Collapse sidebar"
           >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 16 16"
-              fill="currentColor"
-              aria-hidden="true"
-            >
-              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
-            </svg>
-          </a>
+            <SidebarCloseIcon />
+          </button>
         </header>
         <div className="flex-1 overflow-hidden">
           <Sidebar
@@ -227,7 +234,18 @@ export function EditorShell({
         </div>
       </aside>
 
-      <main className="flex flex-col overflow-hidden bg-canvas">
+      <main className="relative flex flex-col overflow-hidden bg-canvas">
+        {!sidebarOpen && (
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(true)}
+            className="absolute top-3 left-3 z-30 inline-flex items-center justify-center w-9 h-9 rounded-md text-[var(--text-subtle)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors bg-[var(--surface)] border border-[var(--border-subtle)] shadow-sm"
+            title="Open sidebar"
+            aria-label="Open sidebar"
+          >
+            <HamburgerIcon />
+          </button>
+        )}
         <div className="flex-1 overflow-hidden">
           {file ? (
             file.format === "md" ? (
@@ -253,5 +271,44 @@ export function EditorShell({
         </div>
       </main>
     </div>
+  );
+}
+
+function HamburgerIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <line x1="4" y1="7" x2="20" y2="7" />
+      <line x1="4" y1="12" x2="20" y2="12" />
+      <line x1="4" y1="17" x2="20" y2="17" />
+    </svg>
+  );
+}
+
+function SidebarCloseIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <line x1="9" y1="4" x2="9" y2="20" />
+      <path d="M15 9l-3 3 3 3" />
+    </svg>
   );
 }

@@ -279,73 +279,64 @@ button { font-family: inherit; }
 }
 
 /* ============================================================
-   TipTap content
+   TipTap editor — only behavioral rules. Visual prose styling
+   lives in src/lib/prose-css.ts (shared with saved HTML files).
+   The .tiptap.prose-canvas compound selector beats .prose-canvas
+   on specificity regardless of stylesheet source order.
    ============================================================ */
 
-.tiptap {
+.tiptap.prose-canvas {
   outline: none;
   min-height: 100%;
-  padding: 4.5rem 5rem 7rem;
-  max-width: 760px;
-  margin: 0 auto;
-  line-height: 1.75;
-  background: var(--canvas);
-  color: var(--text);
-  font-size: 16px;
+  /* Generous bottom padding so a click below the last paragraph
+     places the caret inside the editable area. */
+  padding-bottom: 8rem;
 }
 
-.tiptap h1 { font-size: 2rem; font-weight: 600; letter-spacing: -0.025em; line-height: 1.2; margin: 1.5em 0 0.5em; }
-.tiptap h2 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.3; margin: 1.4em 0 0.4em; }
-.tiptap h3 { font-size: 1.2rem; font-weight: 600; letter-spacing: -0.015em; margin: 1.3em 0 0.3em; }
-.tiptap p { margin: 0.85em 0; }
-.tiptap ul, .tiptap ol { padding-left: 1.5em; margin: 0.85em 0; }
-.tiptap blockquote {
-  border-left-width: 2px;
-  border-left-style: solid;
-  border-left-color: var(--border-strong);
-  padding-left: 1em;
-  color: var(--text-muted);
-  margin: 1.6em 0;
-  font-style: italic;
+/* Placeholder text for an empty <details>: summary shows "タイトル",
+   the body paragraph shows "本文". Both vanish as soon as the user types,
+   because the :has() condition only matches a node whose only child is
+   ProseMirror's trailing <br>. Editor-scoped so saved HTML is unaffected.
+   Hiding the trailing <br> keeps the placeholder on the same line as the
+   caret instead of being pushed to the next line. */
+.tiptap.prose-canvas summary:has(> br.ProseMirror-trailingBreak:only-child) > br.ProseMirror-trailingBreak,
+.tiptap.prose-canvas details > p:has(> br.ProseMirror-trailingBreak:only-child) > br.ProseMirror-trailingBreak {
+  display: none;
 }
-.tiptap pre {
-  background: var(--surface-2);
-  padding: 1rem 1.25rem;
-  border-radius: 6px;
-  overflow-x: auto;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 0.85em;
-  line-height: 1.6;
-}
-.tiptap code {
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  background: var(--surface-2);
-  padding: 0.15em 0.4em;
-  border-radius: 3px;
-  font-size: 0.88em;
-}
-.tiptap pre code { background: none; padding: 0; }
-.tiptap a {
-  color: var(--text);
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 3px;
-  text-decoration-color: var(--border-strong);
-  transition: text-decoration-color 120ms ease;
-}
-.tiptap a:hover { text-decoration-color: var(--text); }
-.tiptap table { border-collapse: collapse; width: 100%; margin: 1.5em 0; font-size: 14px; }
-.tiptap th, .tiptap td { border-width: 1px; border-style: solid; border-color: var(--border-subtle); padding: 0.6em 0.85em; text-align: left; }
-.tiptap th { font-weight: 600; background: var(--surface); }
-.tiptap img { max-width: 100%; height: auto; border-radius: 6px; }
-.tiptap hr { border: 0; height: 1px; background: var(--border); margin: 2.5em 0; }
-
-.tiptap p.is-editor-empty:first-child::before {
-  content: attr(data-placeholder);
+.tiptap.prose-canvas summary:has(> br.ProseMirror-trailingBreak:only-child)::after {
+  content: "タイトル";
   color: var(--text-subtle);
   pointer-events: none;
-  float: left;
-  height: 0;
+}
+.tiptap.prose-canvas details > p:has(> br.ProseMirror-trailingBreak:only-child)::before {
+  content: "本文";
+  color: var(--text-subtle);
+  pointer-events: none;
+}
+
+/* Summary: never show a focus ring or NodeSelection outline. A bare
+   click on the title row briefly highlights the summary otherwise. */
+.tiptap.prose-canvas summary,
+.tiptap.prose-canvas summary:focus,
+.tiptap.prose-canvas summary.ProseMirror-selectednode,
+.tiptap.prose-canvas details.ProseMirror-selectednode {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* Image: hint draggability and show a clear selection outline. The
+   .ProseMirror-selectednode class is added by ProseMirror to whichever
+   node is currently held as a NodeSelection (click an image to select). */
+.tiptap.prose-canvas img {
+  cursor: grab;
+}
+.tiptap.prose-canvas img:active {
+  cursor: grabbing;
+}
+.tiptap.prose-canvas img.ProseMirror-selectednode {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+  border-radius: 2px;
 }
 
 /* ============================================================
