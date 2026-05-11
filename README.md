@@ -229,7 +229,7 @@ R2_PUBLIC_URL=https://pub-xxxxxxxxxxxx.r2.dev
 | File | Role |
 |------|------|
 | `scripts/with-r2-secrets.sh` | Reads Keychain via `security find-generic-password`, exports env vars, execs the wrapped command. |
-| `src/app/api/upload-image/route.ts` | POST endpoint; validates MIME / 10 MB max; uploads to R2; returns the public URL. |
+| `src/app/api/upload-image/route.ts` | POST endpoint; validates MIME / 25 MB max; uploads to R2; returns the public URL. |
 | `src/lib/r2.ts` | S3 client + `uploadImageToR2(bytes, mime)` helper. Generates `images/YYYY/MM/{uuid}.{ext}` keys with a 1-year immutable `Cache-Control`. |
 | `src/lib/upload-image.ts` | Client-side fetch wrapper + DataTransfer → `File[]` helper, shared by both editors. |
 | `src/components/editor.tsx` | TipTap `handlePaste` / `handleDrop` → insert `image` node. |
