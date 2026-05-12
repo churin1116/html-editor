@@ -9,7 +9,7 @@ import {
 } from "@/lib/editor-actions";
 
 type AllowedRoot = { label: string; path: string };
-type Shortcut = { path: string };
+type Shortcut = { path: string; exists?: boolean };
 type TreeEntry = {
   name: string;
   path: string;
@@ -132,12 +132,15 @@ export function Sidebar({
       if (data.root) pending.add(data.root);
       else for (const r of roots) pending.add(r.path);
       if (!timer) timer = setTimeout(flush, 200);
+      // Also refresh shortcuts in case a shortcut target was moved/deleted
+      // within a watched root.
+      fetchShortcuts();
     };
     return () => {
       if (timer) clearTimeout(timer);
       es.close();
     };
-  }, [roots, reloadTree]);
+  }, [roots, reloadTree, fetchShortcuts]);
 
   const handleNewFile = useCallback(
     async (rootPath: string) => {
@@ -903,6 +906,25 @@ function MdIcon() {
   );
 }
 
+function MissingIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M8 1.6a6.4 6.4 0 1 0 0 12.8 6.4 6.4 0 0 0 0-12.8z" />
+      <path d="M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2" />
+    </svg>
+  );
+}
+
 function ShortcutItem({
   shortcut,
   isSelected,
@@ -920,6 +942,7 @@ function ShortcutItem({
   const ext = name.match(/\.(html?|md|markdown)$/i)?.[1].toLowerCase() ?? "";
   const display = name.replace(/\.(html?|md|markdown)$/i, "");
   const isMd = ext === "md" || ext === "markdown";
+  const missing = shortcut.exists === false;
   return (
     <div className="relative group/shortcut">
       <button
@@ -930,15 +953,15 @@ function ShortcutItem({
           e.stopPropagation();
           onContextMenu(e.clientX, e.clientY, shortcut.path);
         }}
-        className={`tree-item ${isSelected ? "is-selected" : ""}`}
+        className={`tree-item ${isSelected ? "is-selected" : ""} ${missing ? "is-missing" : ""}`}
         style={{ paddingLeft: "14px", paddingRight: "28px" }}
-        title={shortcut.path}
+        title={missing ? `ファイルが見つかりません: ${shortcut.path}` : shortcut.path}
       >
         <span
           className={`file-icon ${isMd ? "file-icon-md" : "file-icon-html"} flex-shrink-0`}
           aria-hidden="true"
         >
-          {isMd ? <MdIcon /> : <HtmlIcon />}
+          {missing ? <MissingIcon /> : isMd ? <MdIcon /> : <HtmlIcon />}
         </span>
         <span className="truncate flex-1">{display}</span>
       </button>

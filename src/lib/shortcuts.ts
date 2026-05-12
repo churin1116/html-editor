@@ -1,10 +1,12 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
 export type Shortcut = {
   path: string;
 };
+
+export type ShortcutWithStatus = Shortcut & { exists: boolean };
 
 type Config = {
   shortcuts: Shortcut[];
@@ -37,4 +39,18 @@ export async function saveShortcuts(shortcuts: Shortcut[]): Promise<void> {
 
 export function getShortcutsPath(): string {
   return CONFIG_PATH;
+}
+
+export async function loadShortcutsWithStatus(): Promise<ShortcutWithStatus[]> {
+  const shortcuts = await loadShortcuts();
+  return Promise.all(
+    shortcuts.map(async (s) => {
+      try {
+        const st = await stat(s.path);
+        return { ...s, exists: st.isFile() };
+      } catch {
+        return { ...s, exists: false };
+      }
+    }),
+  );
 }

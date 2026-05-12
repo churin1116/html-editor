@@ -94,6 +94,19 @@ button { font-family: inherit; }
   opacity: 0.85;
 }
 
+.tree-item.is-missing {
+  color: var(--text-subtle);
+}
+.tree-item.is-missing > span:last-child {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in srgb, var(--text-subtle) 60%, transparent);
+}
+.tree-item.is-missing .file-icon {
+  color: var(--danger);
+  opacity: 0.75;
+}
+
 .tree-dir {
   display: flex;
   align-items: center;

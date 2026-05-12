@@ -2,12 +2,16 @@ import { stat } from "node:fs/promises";
 import { NextResponse } from "next/server";
 import { expandPath } from "@/lib/allowed-roots";
 import { detectFormat } from "@/lib/format";
-import { loadShortcuts, saveShortcuts } from "@/lib/shortcuts";
+import {
+  loadShortcuts,
+  loadShortcutsWithStatus,
+  saveShortcuts,
+} from "@/lib/shortcuts";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const shortcuts = await loadShortcuts();
+  const shortcuts = await loadShortcutsWithStatus();
   return NextResponse.json({ shortcuts });
 }
 
@@ -67,7 +71,7 @@ export async function POST(req: Request) {
 
   const next = [...shortcuts, { path: absolute }];
   await saveShortcuts(next);
-  return NextResponse.json({ shortcuts: next });
+  return NextResponse.json({ shortcuts: await loadShortcutsWithStatus() });
 }
 
 export async function DELETE(req: Request) {
@@ -83,5 +87,5 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ error: "Shortcut not found", path: absolute }, { status: 404 });
   }
   await saveShortcuts(next);
-  return NextResponse.json({ shortcuts: next });
+  return NextResponse.json({ shortcuts: await loadShortcutsWithStatus() });
 }
