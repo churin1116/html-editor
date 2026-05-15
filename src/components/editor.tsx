@@ -1,6 +1,7 @@
 "use client";
 
 import { Details, type DetailsDefaultState, Summary } from "@/lib/details-node";
+import { Section } from "@/lib/section-node";
 import { extractImageFilesFromDataTransfer, uploadImage } from "@/lib/upload-image";
 import { Image } from "@tiptap/extension-image";
 import { Link } from "@tiptap/extension-link";
@@ -18,10 +19,12 @@ export function Editor({
   content,
   onChange,
   editorRef,
+  editable = true,
 }: {
   content: string;
   onChange: (html: string) => void;
   editorRef?: MutableRefObject<TiptapEditor | null>;
+  editable?: boolean;
 }) {
   const [menu, setMenu] = useState<{
     x: number;
@@ -44,8 +47,10 @@ export function Editor({
       TableCell,
       Details,
       Summary,
+      Section,
     ],
     content,
+    editable,
     immediatelyRender: false,
     onUpdate: ({ editor: e }) => {
       onChange(e.getHTML());
@@ -105,6 +110,11 @@ export function Editor({
       editor.commands.setContent(content, { emitUpdate: false });
     }
   }, [content, editor]);
+
+  useEffect(() => {
+    if (!editor) return;
+    if (editor.isEditable !== editable) editor.setEditable(editable);
+  }, [editable, editor]);
 
   useEffect(() => {
     if (!editorRef) return;

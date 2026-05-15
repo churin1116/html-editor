@@ -1,3 +1,4 @@
+import { formatForSave } from "./html-pretty";
 import { PROSE_CSS } from "./prose-css";
 
 const CHAMELEON_THEME_CSS = "https://churin1116.github.io/html-chameleon/theme/v1/theme.css";
@@ -8,6 +9,7 @@ const CONTENT_CLOSE = "</article>";
 
 export function wrapContent(innerHtml: string, title: string): string {
   const safeTitle = escapeHtml(title);
+  const formattedInner = formatForSave(innerHtml).replace(/\n$/, "");
   return `<!doctype html>
 <html lang="ja" data-theme="light">
 <head>
@@ -21,7 +23,7 @@ export function wrapContent(innerHtml: string, title: string): string {
 </head>
 <body class="bg-canvas">
 ${CONTENT_OPEN}
-${innerHtml}
+${formattedInner}
 ${CONTENT_CLOSE}
 </body>
 </html>
@@ -50,6 +52,22 @@ export function unwrapContent(fullHtml: string): { content: string; title: strin
 
 export function isManagedHtml(fullHtml: string): boolean {
   return fullHtml.includes('data-html-editor="1"');
+}
+
+export type HtmlShape = "managed" | "fragment" | "full-document";
+
+// Classify an on-disk HTML file. Files this editor created or has previously
+// rewrapped carry `data-html-editor="1"` and round-trip cleanly. Files
+// without that marker but with doctype / <html> / <head> / <body> are
+// hand-authored full documents — Tiptap would silently drop those wrappers
+// on parse, so we treat them as read-only. Everything else is a fragment.
+export function classifyHtml(raw: string): HtmlShape {
+  if (isManagedHtml(raw)) return "managed";
+  if (/<!doctype\s+html/i.test(raw)) return "full-document";
+  if (/<html[\s>]/i.test(raw)) return "full-document";
+  if (/<head[\s>]/i.test(raw)) return "full-document";
+  if (/<body[\s>]/i.test(raw)) return "full-document";
+  return "fragment";
 }
 
 function escapeHtml(s: string): string {

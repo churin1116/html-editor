@@ -2,7 +2,8 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { detectFormat } from "@/lib/format";
 import { PathNotAllowedError, resolveSafePath } from "@/lib/fs-safe";
-import { isManagedHtml, unwrapContent } from "@/lib/html-template";
+import { preserveBlankLines } from "@/lib/html-pretty";
+import { type HtmlShape, classifyHtml, isManagedHtml, unwrapContent } from "@/lib/html-template";
 
 export type LoadedFile = {
   path: string;
@@ -11,6 +12,7 @@ export type LoadedFile = {
   title: string;
   mtimeMs: number;
   managed: boolean;
+  shape: HtmlShape | null;
 };
 
 export type LoadFileError = {
@@ -18,9 +20,7 @@ export type LoadFileError = {
   status: number;
 };
 
-export async function loadFileFromDisk(
-  filePath: string,
-): Promise<LoadedFile | LoadFileError> {
+export async function loadFileFromDisk(filePath: string): Promise<LoadedFile | LoadFileError> {
   try {
     const { absolute } = await resolveSafePath(filePath);
     const format = detectFormat(absolute);
@@ -37,11 +37,13 @@ export async function loadFileFromDisk(
     let content: string;
     let title: string;
     let managed = true;
+    let shape: HtmlShape | null = null;
     if (format === "html") {
       const unwrapped = unwrapContent(raw);
-      content = unwrapped.content;
+      content = preserveBlankLines(unwrapped.content);
       title = unwrapped.title || baseName;
       managed = isManagedHtml(raw);
+      shape = classifyHtml(raw);
     } else {
       content = raw;
       title = baseName;
@@ -54,6 +56,7 @@ export async function loadFileFromDisk(
       title,
       mtimeMs: s.mtimeMs,
       managed,
+      shape,
     };
   } catch (err: unknown) {
     if (err instanceof PathNotAllowedError) {

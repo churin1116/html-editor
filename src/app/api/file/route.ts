@@ -1,10 +1,11 @@
-import { stat, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { NextResponse } from "next/server";
 import { detectFormat } from "@/lib/format";
 import { PathNotAllowedError, resolveSafePath } from "@/lib/fs-safe";
-import { wrapContent } from "@/lib/html-template";
+import { formatForSave } from "@/lib/html-pretty";
+import { classifyHtml, wrapContent } from "@/lib/html-template";
 import { loadFileFromDisk } from "@/lib/load-file";
+import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
@@ -70,7 +71,27 @@ export async function PUT(req: Request) {
 
     let toWrite: string;
     if (format === "html") {
-      toWrite = wrapContent(content, safeTitle);
+      // Three shapes:
+      //   managed       → has data-html-editor marker; rewrap with Chameleon shell
+      //   fragment      → no doctype/html/head/body; save raw with pretty-print
+      //   full-document → hand-authored full HTML; refuse to save because
+      //                   Tiptap silently drops <head> and doctype on parse
+      let shape: "managed" | "fragment" | "full-document" = "managed";
+      if (exists) {
+        const existingRaw = await readFile(absolute, "utf8");
+        shape = classifyHtml(existingRaw);
+      }
+      if (shape === "full-document") {
+        return NextResponse.json(
+          {
+            error: "read-only",
+            message:
+              'This file is a full HTML document with <head>/doctype, which this editor cannot round-trip safely. Open it in a text editor, or add data-html-editor="1" to the content article to opt in.',
+          },
+          { status: 422 },
+        );
+      }
+      toWrite = shape === "managed" ? wrapContent(content, safeTitle) : formatForSave(content);
     } else {
       toWrite = content;
     }
