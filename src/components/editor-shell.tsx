@@ -1,5 +1,6 @@
 "use client";
 
+import { ConflictDialog, type ConflictResolution } from "@/components/conflict-dialog";
 import { Editor } from "@/components/editor";
 import { MdEditor } from "@/components/md-editor";
 import { Sidebar } from "@/components/sidebar";
@@ -46,6 +47,13 @@ export function EditorShell({
   const [dirty, setDirty] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(initialSidebarOpen);
+  const [conflict, setConflict] = useState<{
+    diskContent: string;
+    diskTitle: string | null;
+    diskShape: HtmlShape | null;
+    diskManaged: boolean | null;
+    currentMtimeMs: number;
+  } | null>(null);
 
   useEffect(() => {
     document.cookie = `${SIDEBAR_OPEN_COOKIE}=${sidebarOpen ? "1" : "0"}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`;
@@ -159,30 +167,13 @@ export function EditorShell({
       });
       const data = await res.json();
       if (res.status === 409) {
-        const ok = window.confirm(
-          "This file was modified externally since you opened it. Overwrite?",
-        );
-        if (ok) {
-          const res2 = await fetch("/api/file", {
-            method: "PUT",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              path: file.path,
-              content: draft,
-              title: file.title,
-            }),
-          });
-          const data2 = await res2.json();
-          if (!res2.ok) {
-            toast.error(data2.error);
-            return;
-          }
-          setFile({ ...file, content: draft, mtimeMs: data2.mtimeMs });
-          setDirty(false);
-          toast.success("Overwritten");
-        } else {
-          toast("Save cancelled");
-        }
+        setConflict({
+          diskContent: data.diskContent ?? "",
+          diskTitle: data.diskTitle ?? null,
+          diskShape: (data.diskShape ?? null) as HtmlShape | null,
+          diskManaged: data.diskManaged ?? null,
+          currentMtimeMs: data.currentMtimeMs,
+        });
         return;
       }
       if (!res.ok) {
@@ -196,6 +187,68 @@ export function EditorShell({
       toast.error(String(e));
     }
   }, [file, draft]);
+
+  const resolveConflict = useCallback(
+    async (action: ConflictResolution) => {
+      if (!file || !conflict) {
+        setConflict(null);
+        return;
+      }
+      if (action === "cancel") {
+        setConflict(null);
+        toast("Save cancelled");
+        return;
+      }
+      if (action === "reload") {
+        const newShape = conflict.diskShape ?? file.shape;
+        const newManaged = conflict.diskManaged ?? file.managed;
+        setFile({
+          ...file,
+          content: conflict.diskContent,
+          title: conflict.diskTitle ?? file.title,
+          shape: newShape,
+          managed: newManaged,
+          mtimeMs: conflict.currentMtimeMs,
+        });
+        setDraft(conflict.diskContent);
+        setDirty(false);
+        setConflict(null);
+        toast.success("Reloaded from disk");
+        if (
+          file.format === "html" &&
+          newShape === "full-document" &&
+          file.shape !== "full-document"
+        ) {
+          toast.error("File is now a full HTML document — read-only");
+        }
+        return;
+      }
+      // overwrite
+      try {
+        const res = await fetch("/api/file", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            path: file.path,
+            content: draft,
+            title: file.title,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          toast.error(data.error);
+          return;
+        }
+        setFile({ ...file, content: draft, mtimeMs: data.mtimeMs });
+        setDirty(false);
+        setConflict(null);
+        toast.success("Overwritten");
+      } catch (e) {
+        toast.error(String(e));
+      }
+    },
+    [file, draft, conflict],
+  );
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -297,6 +350,12 @@ export function EditorShell({
           )}
         </div>
       </main>
+      <ConflictDialog
+        open={conflict !== null}
+        draft={draft}
+        diskContent={conflict?.diskContent ?? ""}
+        onResolve={resolveConflict}
+      />
     </div>
   );
 }

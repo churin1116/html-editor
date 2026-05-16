@@ -55,12 +55,18 @@ export async function PUT(req: Request) {
     }
 
     if (exists && expectedMtimeMs !== undefined && Math.abs(currentMtimeMs - expectedMtimeMs) > 1) {
+      const fresh = await loadFileFromDisk(filePath);
+      const ok = !("error" in fresh);
       return NextResponse.json(
         {
           error: "conflict",
           message: "File was modified externally since it was opened.",
           currentMtimeMs,
           expectedMtimeMs,
+          diskContent: ok ? fresh.content : null,
+          diskTitle: ok ? fresh.title : null,
+          diskShape: ok ? fresh.shape : null,
+          diskManaged: ok ? fresh.managed : null,
         },
         { status: 409 },
       );
