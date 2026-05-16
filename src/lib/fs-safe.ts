@@ -1,6 +1,6 @@
 import path from "node:path";
-import { loadAllowedRoots, type AllowedRoot } from "./allowed-roots";
-import { loadShortcuts } from "./shortcuts";
+import { type AllowedRoot, loadAllowedRoots } from "./allowed-roots";
+import { loadShortcutPaths } from "./shortcuts";
 
 export class PathNotAllowedError extends Error {
   constructor(p: string) {
@@ -23,8 +23,8 @@ export async function resolveSafePath(
     }
   }
 
-  const shortcuts = await loadShortcuts();
-  if (shortcuts.some((s) => s.path === absolute)) {
+  const shortcutPaths = await loadShortcutPaths();
+  if (shortcutPaths.includes(absolute)) {
     return {
       absolute,
       root: { label: "Shortcut", path: path.dirname(absolute) },
