@@ -10,17 +10,14 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="ja" data-theme="light">
+    <html lang="ja" data-theme="light" data-chameleon="v1" suppressHydrationWarning>
       <head>
         <meta name="chameleon" content="v1" />
         <link
           rel="stylesheet"
           href="https://churin1116.github.io/html-chameleon/theme/v1/theme.css"
         />
-        <script
-          src="https://churin1116.github.io/html-chameleon/theme/v1/theme.js"
-          async={false}
-        />
+        <script src="https://churin1116.github.io/html-chameleon/theme/v1/theme.js" async={false} />
       </head>
       <body className="bg-canvas">
         {children}
