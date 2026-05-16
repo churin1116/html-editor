@@ -1,22 +1,94 @@
 "use client";
 
+import { ACTIONS, type ActionIcon, type ActionId, type EditorMode } from "@/lib/editor-actions";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  ACTIONS,
-  type ActionIcon,
-  type ActionId,
-  type EditorMode,
-} from "@/lib/editor-actions";
+import { toast } from "sonner";
 
 type AllowedRoot = { label: string; path: string };
-type Shortcut = { path: string; exists?: boolean };
+type ShortcutFileNode = {
+  type: "file";
+  path: string;
+  alias?: string;
+  exists?: boolean;
+};
+type ShortcutFolderNode = {
+  type: "folder";
+  id: string;
+  name: string;
+  children: ShortcutNode[];
+};
+type ShortcutNode = ShortcutFileNode | ShortcutFolderNode;
+type AddFormTarget = { parentId: string | null; kind: "file" | "folder" };
+type MoveSource =
+  | { kind: "file"; path: string }
+  | { kind: "folder"; id: string };
+type DropTargetId = string | "root";
+
+const DRAG_MIME = "application/x-shortcut-move";
+
+function findFolderById(
+  nodes: ShortcutNode[],
+  id: string,
+): ShortcutFolderNode | null {
+  for (const n of nodes) {
+    if (n.type !== "folder") continue;
+    if (n.id === id) return n;
+    const r = findFolderById(n.children, id);
+    if (r) return r;
+  }
+  return null;
+}
+
+function isInvalidDrop(
+  tree: ShortcutNode[],
+  source: MoveSource | null,
+  target: DropTargetId,
+): boolean {
+  if (!source) return false;
+  if (source.kind !== "folder") return false;
+  if (target === "root") return false;
+  if (target === source.id) return true;
+  const src = findFolderById(tree, source.id);
+  if (!src) return false;
+  return findFolderById(src.children, target) !== null;
+}
+
+type DnD = {
+  dragOverTarget: DropTargetId | null;
+  source: MoveSource | null;
+  tree: ShortcutNode[];
+  onDragStart: (e: React.DragEvent, source: MoveSource) => void;
+  onDragEnd: () => void;
+  onDragOver: (e: React.DragEvent, target: DropTargetId) => void;
+  onDragLeave: (target: DropTargetId) => void;
+  onDrop: (e: React.DragEvent, target: DropTargetId) => void;
+};
+
+type RenameAPI = {
+  editingPath: string | null;
+  onSubmit: (path: string, alias: string) => void;
+  onCancel: () => void;
+};
+
+type ShortcutContextMenuOpener = (
+  x: number,
+  y: number,
+  path: string,
+  alias?: string,
+) => void;
 type TreeEntry = {
   name: string;
   path: string;
   type: "file" | "directory";
   children?: TreeEntry[];
 };
-type ContextMenuState = { x: number; y: number; path: string };
+type ContextMenuState = {
+  x: number;
+  y: number;
+  path: string;
+  source: "root" | "shortcut";
+  alias?: string;
+};
 
 export function Sidebar({
   selectedPath,
@@ -40,14 +112,36 @@ export function Sidebar({
   const [showAddForm, setShowAddForm] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [collapsedRoots, setCollapsedRoots] = useState<Record<string, boolean>>({});
-  const [shortcuts, setShortcuts] = useState<Shortcut[]>([]);
+  const [shortcutTree, setShortcutTree] = useState<ShortcutNode[]>([]);
   const [shortcutsCollapsed, setShortcutsCollapsed] = useState(false);
-  const [showAddShortcutForm, setShowAddShortcutForm] = useState(false);
+  const [addFormFor, setAddFormFor] = useState<AddFormTarget | null>(null);
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
+  const [dragOverTarget, setDragOverTarget] = useState<DropTargetId | null>(null);
+  const [dragSource, setDragSource] = useState<MoveSource | null>(null);
 
-  const openContextMenu = useCallback((x: number, y: number, path: string) => {
-    setContextMenu({ x, y, path });
+  const toggleFolder = useCallback((folderId: string) => {
+    setCollapsedFolders((prev) => ({ ...prev, [folderId]: !prev[folderId] }));
   }, []);
+
+  const openContextMenu = useCallback(
+    (x: number, y: number, path: string) => {
+      setContextMenu({ x, y, path, source: "root" });
+    },
+    [],
+  );
+  const openShortcutContextMenu = useCallback(
+    (x: number, y: number, path: string, alias?: string) => {
+      setContextMenu({ x, y, path, source: "shortcut", alias });
+    },
+    [],
+  );
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+  const [editingAliasFor, setEditingAliasFor] = useState<string | null>(null);
+  const startRenameAlias = useCallback((path: string) => {
+    setEditingAliasFor(path);
+    setContextMenu(null);
+  }, []);
+  const cancelRenameAlias = useCallback(() => setEditingAliasFor(null), []);
   const toggleRoot = useCallback((rootPath: string) => {
     setCollapsedRoots((prev) => ({ ...prev, [rootPath]: !prev[rootPath] }));
   }, []);
@@ -66,7 +160,7 @@ export function Sidebar({
     try {
       const r = await fetch("/api/shortcuts");
       const data = await r.json();
-      setShortcuts(data.shortcuts ?? []);
+      setShortcutTree(data.shortcuts ?? []);
     } catch (e) {
       setError(String(e));
     }
@@ -162,90 +256,202 @@ export function Sidebar({
     [reloadTree, onCreated],
   );
 
-  const handleAddRoot = useCallback(
-    async (label: string, path: string) => {
-      const res = await fetch("/api/roots", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ label, path }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        return data.error
-          ? `${data.error}${data.path ? ` (${data.path})` : ""}`
-          : "Failed";
-      }
-      setRoots(data.roots ?? []);
-      setShowAddForm(false);
-      return null;
-    },
-    [],
-  );
+  const handleAddRoot = useCallback(async (label: string, path: string) => {
+    const res = await fetch("/api/roots", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ label, path }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      return data.error ? `${data.error}${data.path ? ` (${data.path})` : ""}` : "Failed";
+    }
+    setRoots(data.roots ?? []);
+    setShowAddForm(false);
+    return null;
+  }, []);
 
-  const handleAddShortcut = useCallback(
-    async (rawPath: string) => {
-      const res = await fetch("/api/shortcuts", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path: rawPath }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        return data.error
-          ? `${data.error}${data.path ? ` (${data.path})` : ""}`
-          : "Failed";
-      }
-      setShortcuts(data.shortcuts ?? []);
-      setShowAddShortcutForm(false);
-      return null;
-    },
-    [],
-  );
+  const handleAddShortcut = useCallback(async (rawPath: string, parentId: string | null) => {
+    const res = await fetch("/api/shortcuts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "file", path: rawPath, parentId }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      return data.error ? `${data.error}${data.path ? ` (${data.path})` : ""}` : "Failed";
+    }
+    setShortcutTree(data.shortcuts ?? []);
+    setAddFormFor(null);
+    return null;
+  }, []);
+
+  const handleAddFolder = useCallback(async (name: string, parentId: string | null) => {
+    const res = await fetch("/api/shortcuts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "folder", name, parentId }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      return data.error ?? "Failed";
+    }
+    setShortcutTree(data.shortcuts ?? []);
+    setAddFormFor(null);
+    return null;
+  }, []);
 
   const handleRemoveShortcut = useCallback(async (shortcutPath: string) => {
-    const ok = window.confirm(
-      "Remove this shortcut?\nThe file on disk is not deleted.",
-    );
+    const ok = window.confirm("Remove this shortcut?\nThe file on disk is not deleted.");
     if (!ok) return;
-    const res = await fetch(
-      `/api/shortcuts?path=${encodeURIComponent(shortcutPath)}`,
-      { method: "DELETE" },
-    );
+    const res = await fetch(`/api/shortcuts?path=${encodeURIComponent(shortcutPath)}`, {
+      method: "DELETE",
+    });
     const data = await res.json();
     if (!res.ok) {
       window.alert(`Failed: ${data.error}`);
       return;
     }
-    setShortcuts(data.shortcuts ?? []);
+    setShortcutTree(data.shortcuts ?? []);
   }, []);
 
-  const handleRemoveRoot = useCallback(
-    async (rootPath: string, label: string) => {
-      const ok = window.confirm(
-        `Remove "${label}"?\nFiles on disk are not deleted.`,
-      );
+  const handleRemoveFolder = useCallback(
+    async (folderId: string, folderName: string, hasChildren: boolean) => {
+      const msg = hasChildren
+        ? `Remove folder "${folderName}" and all shortcuts inside?\nFiles on disk are not deleted.`
+        : `Remove folder "${folderName}"?`;
+      const ok = window.confirm(msg);
       if (!ok) return;
-      const res = await fetch(
-        `/api/roots?path=${encodeURIComponent(rootPath)}`,
-        { method: "DELETE" },
-      );
+      const res = await fetch(`/api/shortcuts?folderId=${encodeURIComponent(folderId)}`, {
+        method: "DELETE",
+      });
       const data = await res.json();
       if (!res.ok) {
         window.alert(`Failed: ${data.error}`);
         return;
       }
-      setRoots(data.roots ?? []);
-      setTrees((prev) => {
-        const { [rootPath]: _, ...rest } = prev;
-        return rest;
-      });
-      setRootErrors((prev) => {
-        const { [rootPath]: _, ...rest } = prev;
-        return rest;
-      });
+      setShortcutTree(data.shortcuts ?? []);
     },
     [],
   );
+
+  const openAddForm = useCallback((parentId: string | null, kind: "file" | "folder") => {
+    setShortcutsCollapsed(false);
+    if (parentId !== null) {
+      setCollapsedFolders((prev) => (prev[parentId] ? { ...prev, [parentId]: false } : prev));
+    }
+    setAddFormFor({ parentId, kind });
+  }, []);
+
+  const handleSubmitAlias = useCallback(
+    async (path: string, alias: string) => {
+      setEditingAliasFor(null);
+      const res = await fetch("/api/shortcuts", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "rename", path, alias }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error ?? "Rename failed");
+        return;
+      }
+      setShortcutTree(data.shortcuts ?? []);
+    },
+    [],
+  );
+
+  const handleMove = useCallback(
+    async (source: MoveSource, targetFolderId: string | null) => {
+      const res = await fetch("/api/shortcuts", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "move", source, targetFolderId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error ?? "Move failed");
+        return;
+      }
+      setShortcutTree(data.shortcuts ?? []);
+      if (targetFolderId !== null) {
+        setCollapsedFolders((prev) =>
+          prev[targetFolderId] ? { ...prev, [targetFolderId]: false } : prev,
+        );
+      }
+    },
+    [],
+  );
+
+  const dnd: DnD = {
+    dragOverTarget,
+    source: dragSource,
+    tree: shortcutTree,
+    onDragStart: (e, source) => {
+      e.dataTransfer.setData(DRAG_MIME, JSON.stringify(source));
+      e.dataTransfer.effectAllowed = "move";
+      setDragSource(source);
+    },
+    onDragEnd: () => {
+      setDragSource(null);
+      setDragOverTarget(null);
+    },
+    onDragOver: (e, target) => {
+      if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+      if (isInvalidDrop(shortcutTree, dragSource, target)) {
+        e.dataTransfer.dropEffect = "none";
+        return;
+      }
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      if (dragOverTarget !== target) setDragOverTarget(target);
+    },
+    onDragLeave: (target) => {
+      setDragOverTarget((prev) => (prev === target ? null : prev));
+    },
+    onDrop: (e, target) => {
+      if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setDragOverTarget(null);
+      setDragSource(null);
+      const json = e.dataTransfer.getData(DRAG_MIME);
+      if (!json) return;
+      let source: MoveSource;
+      try {
+        source = JSON.parse(json) as MoveSource;
+      } catch {
+        return;
+      }
+      if (isInvalidDrop(shortcutTree, source, target)) {
+        toast.error("Cannot drop a folder into itself or its descendants");
+        return;
+      }
+      handleMove(source, target === "root" ? null : target);
+    },
+  };
+
+  const handleRemoveRoot = useCallback(async (rootPath: string, label: string) => {
+    const ok = window.confirm(`Remove "${label}"?\nFiles on disk are not deleted.`);
+    if (!ok) return;
+    const res = await fetch(`/api/roots?path=${encodeURIComponent(rootPath)}`, {
+      method: "DELETE",
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      window.alert(`Failed: ${data.error}`);
+      return;
+    }
+    setRoots(data.roots ?? []);
+    setTrees((prev) => {
+      const { [rootPath]: _, ...rest } = prev;
+      return rest;
+    });
+    setRootErrors((prev) => {
+      const { [rootPath]: _, ...rest } = prev;
+      return rest;
+    });
+  }, []);
 
   if (error) return <div className="p-5 text-sm text-[var(--danger)]">{error}</div>;
 
@@ -254,146 +460,165 @@ export function Sidebar({
   return (
     <div className="text-sm h-full flex flex-col">
       <div className="flex-1 overflow-y-auto">
-      {isEmpty && !showAddForm && <EmptyState onAdd={() => setShowAddForm(true)} />}
+        {isEmpty && !showAddForm && <EmptyState onAdd={() => setShowAddForm(true)} />}
 
-      {!isEmpty && (
-        <div className="px-3 pt-4 pb-1 group/shortcuts">
-          <div className="flex items-center justify-between px-2 mb-1.5 gap-2">
-            <button
-              type="button"
-              onClick={() => setShortcutsCollapsed((v) => !v)}
-              className="flex items-center gap-1 min-w-0 flex-1 text-left tree-root-toggle"
-              aria-expanded={!shortcutsCollapsed}
-            >
-              <span
-                className={`tree-dir-chevron ${!shortcutsCollapsed ? "is-open" : ""}`}
+        {!isEmpty && (
+          <div
+            className={`px-3 pt-4 pb-1 group/shortcuts relative transition-colors ${
+              dnd.dragOverTarget === "root"
+                ? "bg-[color-mix(in_srgb,var(--text)_4%,transparent)] rounded-md"
+                : ""
+            }`}
+            onDragOver={(e) => dnd.onDragOver(e, "root")}
+            onDragLeave={() => dnd.onDragLeave("root")}
+            onDrop={(e) => dnd.onDrop(e, "root")}
+          >
+            <div className="flex items-center justify-between px-2 mb-1.5 gap-2">
+              <button
+                type="button"
+                onClick={() => setShortcutsCollapsed((v) => !v)}
+                className="flex items-center gap-1 min-w-0 flex-1 text-left tree-root-toggle"
+                aria-expanded={!shortcutsCollapsed}
               >
-                <ChevronIcon />
-              </span>
-              <span className="text-[12px] font-medium text-[var(--text-muted)] truncate tracking-tight">
-                Shortcuts
-              </span>
-            </button>
-            <div className="flex items-center gap-0.5 opacity-0 group-hover/shortcuts:opacity-100 transition-opacity duration-150 flex-shrink-0">
-              <IconBtn
-                onClick={() => {
-                  setShortcutsCollapsed(false);
-                  setShowAddShortcutForm(true);
-                }}
-                title="Add shortcut"
-              >
-                <PlusIcon />
-              </IconBtn>
-            </div>
-          </div>
-          {!shortcutsCollapsed && (
-            <>
-              {showAddShortcutForm && (
-                <div className="px-2 mb-2">
-                  <AddShortcutForm
-                    onCancel={() => setShowAddShortcutForm(false)}
-                    onSubmit={handleAddShortcut}
-                  />
-                </div>
-              )}
-              {shortcuts.length === 0 && !showAddShortcutForm && (
-                <div className="px-4 py-1.5 text-[11px] text-[var(--text-subtle)] leading-relaxed">
-                  Add absolute paths to reach files anywhere.
-                </div>
-              )}
-              {shortcuts.map((s) => (
-                <ShortcutItem
-                  key={s.path}
-                  shortcut={s}
-                  isSelected={selectedPath === s.path}
-                  onSelect={onSelect}
-                  onContextMenu={openContextMenu}
-                  onRemove={handleRemoveShortcut}
-                />
-              ))}
-            </>
-          )}
-        </div>
-      )}
-
-      {!isEmpty && (
-        <div className="flex items-center justify-between px-5 pt-3 pb-3">
-          <span className="section-label">Roots</span>
-          {!showAddForm && (
-            <button
-              type="button"
-              onClick={() => setShowAddForm(true)}
-              className="text-[11px] text-[var(--text-subtle)] hover:text-[var(--text)] transition-colors"
-              title="Add another root"
-            >
-              + add
-            </button>
-          )}
-        </div>
-      )}
-
-      {showAddForm && (
-        <div className={isEmpty ? "px-5 pt-6" : "px-3"}>
-          <AddRootForm
-            onCancel={() => setShowAddForm(false)}
-            onSubmit={handleAddRoot}
-          />
-        </div>
-      )}
-
-      <div className="px-3 pb-6">
-        {roots.map((root) => {
-          const isOpen = !collapsedRoots[root.path];
-          return (
-            <div key={root.path} className="mb-5 group">
-              <div className="flex items-center justify-between px-2 mb-1.5 gap-2">
-                <button
-                  type="button"
-                  onClick={() => toggleRoot(root.path)}
-                  className="flex items-center gap-1 min-w-0 flex-1 text-left tree-root-toggle"
-                  aria-expanded={isOpen}
-                >
-                  <span className={`tree-dir-chevron ${isOpen ? "is-open" : ""}`}>
-                    <ChevronIcon />
-                  </span>
-                  <span className="text-[12px] font-medium text-[var(--text-muted)] truncate tracking-tight">
-                    {root.label}
-                  </span>
-                </button>
-                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 flex-shrink-0">
-                  <IconBtn onClick={() => handleNewFile(root.path)} title="New HTML file">
-                    <PlusIcon />
-                  </IconBtn>
-                  <IconBtn
-                    onClick={() => handleRemoveRoot(root.path, root.label)}
-                    title="Remove root from list"
-                  >
-                    <CloseIcon />
-                  </IconBtn>
-                </div>
+                <span className={`tree-dir-chevron ${!shortcutsCollapsed ? "is-open" : ""}`}>
+                  <ChevronIcon />
+                </span>
+                <span className="text-[12px] font-medium text-[var(--text-muted)] truncate tracking-tight">
+                  Shortcuts
+                </span>
+              </button>
+              <div className="flex items-center gap-0.5 opacity-0 group-hover/shortcuts:opacity-100 transition-opacity duration-150 flex-shrink-0">
+                <IconBtn onClick={() => openAddForm(null, "folder")} title="New folder">
+                  <FolderPlusIcon />
+                </IconBtn>
+                <IconBtn onClick={() => openAddForm(null, "file")} title="Add shortcut">
+                  <PlusIcon />
+                </IconBtn>
               </div>
-              {isOpen && (
-                rootErrors[root.path] ? (
-                  <div className="mx-2 px-3 py-2.5 text-[11.5px] text-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] rounded-md">
-                    <div className="font-medium mb-0.5">{rootErrors[root.path]}</div>
-                    <div className="text-[var(--text-muted)] break-all font-mono text-[10.5px]">
-                      {root.path}
-                    </div>
-                  </div>
-                ) : (
-                  <TreeView
-                    entries={trees[root.path] ?? []}
-                    selectedPath={selectedPath}
-                    onSelect={onSelect}
-                    onContextMenu={openContextMenu}
-                    depth={0}
-                  />
-                )
-              )}
             </div>
-          );
-        })}
-      </div>
+            {!shortcutsCollapsed && (
+              <>
+                {addFormFor?.parentId === null && (
+                  <div className="px-2 mb-2">
+                    {addFormFor.kind === "file" ? (
+                      <AddShortcutForm
+                        onCancel={() => setAddFormFor(null)}
+                        onSubmit={(p) => handleAddShortcut(p, null)}
+                      />
+                    ) : (
+                      <AddFolderForm
+                        onCancel={() => setAddFormFor(null)}
+                        onSubmit={(n) => handleAddFolder(n, null)}
+                      />
+                    )}
+                  </div>
+                )}
+                {shortcutTree.length === 0 && addFormFor === null && (
+                  <div className="px-4 py-1.5 text-[11px] text-[var(--text-subtle)] leading-relaxed">
+                    Add absolute paths to reach files anywhere.
+                  </div>
+                )}
+                <ShortcutTreeView
+                  nodes={shortcutTree}
+                  depth={0}
+                  selectedPath={selectedPath}
+                  onSelect={onSelect}
+                  onContextMenu={openShortcutContextMenu}
+                  onRemoveFile={handleRemoveShortcut}
+                  onRemoveFolder={handleRemoveFolder}
+                  collapsedFolders={collapsedFolders}
+                  onToggleFolder={toggleFolder}
+                  addFormFor={addFormFor}
+                  onOpenAddForm={openAddForm}
+                  onCancelAddForm={() => setAddFormFor(null)}
+                  onSubmitFile={handleAddShortcut}
+                  onSubmitFolder={handleAddFolder}
+                  dnd={dnd}
+                  rename={{
+                    editingPath: editingAliasFor,
+                    onSubmit: handleSubmitAlias,
+                    onCancel: cancelRenameAlias,
+                  }}
+                />
+              </>
+            )}
+          </div>
+        )}
+
+        {!isEmpty && (
+          <div className="flex items-center justify-between px-5 pt-3 pb-3">
+            <span className="section-label">Roots</span>
+            {!showAddForm && (
+              <button
+                type="button"
+                onClick={() => setShowAddForm(true)}
+                className="text-[11px] text-[var(--text-subtle)] hover:text-[var(--text)] transition-colors"
+                title="Add another root"
+              >
+                + add
+              </button>
+            )}
+          </div>
+        )}
+
+        {showAddForm && (
+          <div className={isEmpty ? "px-5 pt-6" : "px-3"}>
+            <AddRootForm onCancel={() => setShowAddForm(false)} onSubmit={handleAddRoot} />
+          </div>
+        )}
+
+        <div className="px-3 pb-6">
+          {roots.map((root) => {
+            const isOpen = !collapsedRoots[root.path];
+            return (
+              <div key={root.path} className="mb-5 group">
+                <div className="flex items-center justify-between px-2 mb-1.5 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleRoot(root.path)}
+                    className="flex items-center gap-1 min-w-0 flex-1 text-left tree-root-toggle"
+                    aria-expanded={isOpen}
+                  >
+                    <span className={`tree-dir-chevron ${isOpen ? "is-open" : ""}`}>
+                      <ChevronIcon />
+                    </span>
+                    <span className="text-[12px] font-medium text-[var(--text-muted)] truncate tracking-tight">
+                      {root.label}
+                    </span>
+                  </button>
+                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 flex-shrink-0">
+                    <IconBtn onClick={() => handleNewFile(root.path)} title="New HTML file">
+                      <PlusIcon />
+                    </IconBtn>
+                    <IconBtn
+                      onClick={() => handleRemoveRoot(root.path, root.label)}
+                      title="Remove root from list"
+                    >
+                      <CloseIcon />
+                    </IconBtn>
+                  </div>
+                </div>
+                {isOpen &&
+                  (rootErrors[root.path] ? (
+                    <div className="mx-2 px-3 py-2.5 text-[11.5px] text-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] rounded-md">
+                      <div className="font-medium mb-0.5">{rootErrors[root.path]}</div>
+                      <div className="text-[var(--text-muted)] break-all font-mono text-[10.5px]">
+                        {root.path}
+                      </div>
+                    </div>
+                  ) : (
+                    <TreeView
+                      entries={trees[root.path] ?? []}
+                      selectedPath={selectedPath}
+                      onSelect={onSelect}
+                      onContextMenu={openContextMenu}
+                      depth={0}
+                    />
+                  ))}
+              </div>
+            );
+          })}
+        </div>
       </div>
       <div className="border-t border-[var(--border-subtle)] px-3 py-2 flex items-center gap-1">
         <HelpButton mode={mode} onApply={onApply} />
@@ -413,7 +638,10 @@ export function Sidebar({
           x={contextMenu.x}
           y={contextMenu.y}
           path={contextMenu.path}
+          source={contextMenu.source}
+          alias={contextMenu.alias}
           onClose={closeContextMenu}
+          onStartRename={startRenameAlias}
         />
       )}
     </div>
@@ -467,8 +695,7 @@ function HelpButton({
           style={{
             background: "var(--surface)",
             border: "1px solid var(--border-subtle)",
-            boxShadow:
-              "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)",
             maxHeight: "min(70vh, 560px)",
           }}
         >
@@ -493,10 +720,7 @@ function HelpButton({
               >
                 <span className="flex items-center gap-2 min-w-0">
                   {a.icon && (
-                    <span
-                      className="text-[var(--text-muted)] flex-shrink-0"
-                      aria-hidden="true"
-                    >
+                    <span className="text-[var(--text-muted)] flex-shrink-0" aria-hidden="true">
                       <ActionIconSvg icon={a.icon} />
                     </span>
                   )}
@@ -539,13 +763,7 @@ function ActionIconSvg({ icon }: { icon: ActionIcon }) {
 
 function GitHubIcon() {
   return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="currentColor"
-      aria-hidden="true"
-    >
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
       <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
     </svg>
   );
@@ -584,11 +802,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
         Add a directory to start editing. Paths can be absolute or use{" "}
         <code className="font-mono text-[12px] text-[var(--text)]">~</code>.
       </p>
-      <button
-        type="button"
-        onClick={onAdd}
-        className="btn-save-active"
-      >
+      <button type="button" onClick={onAdd} className="btn-save-active">
         Add a root
       </button>
     </div>
@@ -650,17 +864,9 @@ function AddRootForm({
         className="input-line font-mono mb-4"
         style={{ fontSize: "12px" }}
       />
-      {err && (
-        <div className="text-[11.5px] text-[var(--danger)] mb-3 leading-relaxed">
-          {err}
-        </div>
-      )}
+      {err && <div className="text-[11.5px] text-[var(--danger)] mb-3 leading-relaxed">{err}</div>}
       <div className="flex items-center gap-3">
-        <button
-          type="submit"
-          disabled={submitting}
-          className="btn-save-active disabled:opacity-40"
-        >
+        <button type="submit" disabled={submitting} className="btn-save-active disabled:opacity-40">
           {submitting ? "Adding…" : "Add"}
         </button>
         <button
@@ -725,6 +931,50 @@ function CloseIcon() {
       strokeLinecap="round"
     >
       <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" />
+    </svg>
+  );
+}
+
+function FolderPlusIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M1.6 4.2c0-.55.45-1 1-1h3.4l1.4 1.6h6c.55 0 1 .45 1 1v6.4c0 .55-.45 1-1 1H2.6c-.55 0-1-.45-1-1V4.2z" />
+      <path d="M8 7.6v4M6 9.6h4" />
+    </svg>
+  );
+}
+
+function FolderIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {open ? (
+        <>
+          <path d="M1.6 4.2c0-.55.45-1 1-1h3.4l1.4 1.6h6c.55 0 1 .45 1 1v1.4H1.6V4.2z" />
+          <path d="M1.6 7.2h12.8l-1.2 4.4c-.12.44-.52.76-.98.76H2.78c-.55 0-1-.45-1-1V7.2z" />
+        </>
+      ) : (
+        <path d="M1.6 4.2c0-.55.45-1 1-1h3.4l1.4 1.6h6c.55 0 1 .45 1 1v6.4c0 .55-.45 1-1 1H2.6c-.55 0-1-.45-1-1V4.2z" />
+      )}
     </svg>
   );
 }
@@ -806,9 +1056,7 @@ function DirectoryNode({
         className="tree-dir"
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
       >
-        <span
-          className={`tree-dir-chevron ${open ? "is-open" : ""}`}
-        >
+        <span className={`tree-dir-chevron ${open ? "is-open" : ""}`}>
           <ChevronIcon />
         </span>
         <span className="truncate">{entry.name}</span>
@@ -925,59 +1173,425 @@ function MissingIcon() {
   );
 }
 
+function ShortcutTreeView({
+  nodes,
+  depth,
+  selectedPath,
+  onSelect,
+  onContextMenu,
+  onRemoveFile,
+  onRemoveFolder,
+  collapsedFolders,
+  onToggleFolder,
+  addFormFor,
+  onOpenAddForm,
+  onCancelAddForm,
+  onSubmitFile,
+  onSubmitFolder,
+  dnd,
+  rename,
+}: {
+  nodes: ShortcutNode[];
+  depth: number;
+  selectedPath: string | null;
+  onSelect: (path: string) => void;
+  onContextMenu: ShortcutContextMenuOpener;
+  onRemoveFile: (path: string) => void;
+  onRemoveFolder: (id: string, name: string, hasChildren: boolean) => void;
+  collapsedFolders: Record<string, boolean>;
+  onToggleFolder: (id: string) => void;
+  addFormFor: AddFormTarget | null;
+  onOpenAddForm: (parentId: string | null, kind: "file" | "folder") => void;
+  onCancelAddForm: () => void;
+  onSubmitFile: (path: string, parentId: string | null) => Promise<string | null>;
+  onSubmitFolder: (name: string, parentId: string | null) => Promise<string | null>;
+  dnd: DnD;
+  rename: RenameAPI;
+}) {
+  return (
+    <>
+      {nodes.map((node) =>
+        node.type === "file" ? (
+          <ShortcutItem
+            key={`f:${node.path}`}
+            file={node}
+            depth={depth}
+            isSelected={selectedPath === node.path}
+            onSelect={onSelect}
+            onContextMenu={onContextMenu}
+            onRemove={onRemoveFile}
+            dnd={dnd}
+            rename={rename}
+          />
+        ) : (
+          <ShortcutFolderItem
+            key={`d:${node.id}`}
+            folder={node}
+            depth={depth}
+            selectedPath={selectedPath}
+            onSelect={onSelect}
+            onContextMenu={onContextMenu}
+            onRemoveFile={onRemoveFile}
+            onRemoveFolder={onRemoveFolder}
+            collapsedFolders={collapsedFolders}
+            onToggleFolder={onToggleFolder}
+            addFormFor={addFormFor}
+            onOpenAddForm={onOpenAddForm}
+            onCancelAddForm={onCancelAddForm}
+            onSubmitFile={onSubmitFile}
+            onSubmitFolder={onSubmitFolder}
+            dnd={dnd}
+            rename={rename}
+          />
+        ),
+      )}
+    </>
+  );
+}
+
+function ShortcutFolderItem({
+  folder,
+  depth,
+  selectedPath,
+  onSelect,
+  onContextMenu,
+  onRemoveFile,
+  onRemoveFolder,
+  collapsedFolders,
+  onToggleFolder,
+  addFormFor,
+  onOpenAddForm,
+  onCancelAddForm,
+  onSubmitFile,
+  onSubmitFolder,
+  dnd,
+  rename,
+}: {
+  folder: ShortcutFolderNode;
+  depth: number;
+  selectedPath: string | null;
+  onSelect: (path: string) => void;
+  onContextMenu: ShortcutContextMenuOpener;
+  onRemoveFile: (path: string) => void;
+  onRemoveFolder: (id: string, name: string, hasChildren: boolean) => void;
+  collapsedFolders: Record<string, boolean>;
+  onToggleFolder: (id: string) => void;
+  addFormFor: AddFormTarget | null;
+  onOpenAddForm: (parentId: string | null, kind: "file" | "folder") => void;
+  onCancelAddForm: () => void;
+  onSubmitFile: (path: string, parentId: string | null) => Promise<string | null>;
+  onSubmitFolder: (name: string, parentId: string | null) => Promise<string | null>;
+  dnd: DnD;
+  rename: RenameAPI;
+}) {
+  const open = !collapsedFolders[folder.id];
+  const showForm = addFormFor?.parentId === folder.id;
+  const isDragOver = dnd.dragOverTarget === folder.id;
+  const isDragging =
+    dnd.source?.kind === "folder" && dnd.source.id === folder.id;
+  return (
+    <div className="group/folder">
+      <div
+        className={`relative flex items-center transition-colors rounded-sm ${
+          isDragOver ? "bg-[color-mix(in_srgb,var(--text)_8%,transparent)]" : ""
+        } ${isDragging ? "opacity-50" : ""}`}
+        style={{ paddingLeft: `${depth * 12}px` }}
+        draggable
+        onDragStart={(e) => {
+          e.stopPropagation();
+          dnd.onDragStart(e, { kind: "folder", id: folder.id });
+        }}
+        onDragEnd={dnd.onDragEnd}
+        onDragOver={(e) => {
+          e.stopPropagation();
+          dnd.onDragOver(e, folder.id);
+        }}
+        onDragLeave={(e) => {
+          e.stopPropagation();
+          dnd.onDragLeave(folder.id);
+        }}
+        onDrop={(e) => dnd.onDrop(e, folder.id)}
+      >
+        <button
+          type="button"
+          onClick={() => onToggleFolder(folder.id)}
+          className="tree-dir flex-1 min-w-0"
+          style={{ paddingRight: "60px" }}
+          aria-expanded={open}
+        >
+          <span className={`tree-dir-chevron ${open ? "is-open" : ""}`}>
+            <ChevronIcon />
+          </span>
+          <span className="file-icon flex-shrink-0" aria-hidden="true">
+            <FolderIcon open={open} />
+          </span>
+          <span className="truncate">{folder.name}</span>
+        </button>
+        <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover/folder:opacity-100 transition-opacity">
+          <IconBtn onClick={() => onOpenAddForm(folder.id, "file")} title="Add shortcut here">
+            <PlusIcon />
+          </IconBtn>
+          <IconBtn onClick={() => onOpenAddForm(folder.id, "folder")} title="New subfolder">
+            <FolderPlusIcon />
+          </IconBtn>
+          <IconBtn
+            onClick={() => onRemoveFolder(folder.id, folder.name, folder.children.length > 0)}
+            title="Remove folder"
+          >
+            <CloseIcon />
+          </IconBtn>
+        </div>
+      </div>
+      {open && (
+        <>
+          {showForm && (
+            <div
+              className="mb-2 mt-1"
+              style={{ paddingLeft: `${(depth + 1) * 12}px`, paddingRight: "4px" }}
+            >
+              {addFormFor.kind === "file" ? (
+                <AddShortcutForm
+                  onCancel={onCancelAddForm}
+                  onSubmit={(p) => onSubmitFile(p, folder.id)}
+                />
+              ) : (
+                <AddFolderForm
+                  onCancel={onCancelAddForm}
+                  onSubmit={(n) => onSubmitFolder(n, folder.id)}
+                />
+              )}
+            </div>
+          )}
+          <ShortcutTreeView
+            nodes={folder.children}
+            depth={depth + 1}
+            selectedPath={selectedPath}
+            onSelect={onSelect}
+            onContextMenu={onContextMenu}
+            onRemoveFile={onRemoveFile}
+            onRemoveFolder={onRemoveFolder}
+            collapsedFolders={collapsedFolders}
+            onToggleFolder={onToggleFolder}
+            addFormFor={addFormFor}
+            onOpenAddForm={onOpenAddForm}
+            onCancelAddForm={onCancelAddForm}
+            onSubmitFile={onSubmitFile}
+            onSubmitFolder={onSubmitFolder}
+            dnd={dnd}
+            rename={rename}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
 function ShortcutItem({
-  shortcut,
+  file,
+  depth,
   isSelected,
   onSelect,
   onContextMenu,
   onRemove,
+  dnd,
+  rename,
 }: {
-  shortcut: Shortcut;
+  file: ShortcutFileNode;
+  depth: number;
   isSelected: boolean;
   onSelect: (path: string) => void;
-  onContextMenu: (x: number, y: number, path: string) => void;
+  onContextMenu: ShortcutContextMenuOpener;
   onRemove: (path: string) => void;
+  dnd: DnD;
+  rename: RenameAPI;
 }) {
-  const name = shortcut.path.split("/").pop() ?? shortcut.path;
-  const ext = name.match(/\.(html?|md|markdown)$/i)?.[1].toLowerCase() ?? "";
-  const display = name.replace(/\.(html?|md|markdown)$/i, "");
+  const filename = file.path.split("/").pop() ?? file.path;
+  const ext = filename.match(/\.(html?|md|markdown)$/i)?.[1].toLowerCase() ?? "";
+  const baseDisplay = filename.replace(/\.(html?|md|markdown)$/i, "");
+  const display = file.alias ?? baseDisplay;
   const isMd = ext === "md" || ext === "markdown";
-  const missing = shortcut.exists === false;
+  const missing = file.exists === false;
+  const isDragging =
+    dnd.source?.kind === "file" && dnd.source.path === file.path;
+  const isEditing = rename.editingPath === file.path;
+  const titleParts = [
+    missing ? `ファイルが見つかりません` : null,
+    file.alias ? `元ファイル: ${filename}` : null,
+    file.path,
+  ].filter(Boolean);
   return (
-    <div className="relative group/shortcut">
-      <button
-        type="button"
-        onClick={() => onSelect(shortcut.path)}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onContextMenu(e.clientX, e.clientY, shortcut.path);
-        }}
-        className={`tree-item ${isSelected ? "is-selected" : ""} ${missing ? "is-missing" : ""}`}
-        style={{ paddingLeft: "14px", paddingRight: "28px" }}
-        title={missing ? `ファイルが見つかりません: ${shortcut.path}` : shortcut.path}
-      >
-        <span
-          className={`file-icon ${isMd ? "file-icon-md" : "file-icon-html"} flex-shrink-0`}
-          aria-hidden="true"
-        >
-          {missing ? <MissingIcon /> : isMd ? <MdIcon /> : <HtmlIcon />}
-        </span>
-        <span className="truncate flex-1">{display}</span>
-      </button>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onRemove(shortcut.path);
-        }}
-        title="Remove shortcut"
-        aria-label="Remove shortcut"
-        className="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-opacity opacity-0 group-hover/shortcut:opacity-100"
-      >
-        <CloseIcon />
-      </button>
+    <div className={`relative group/shortcut ${isDragging ? "opacity-50" : ""}`}>
+      {isEditing ? (
+        <AliasRenameInput
+          initial={file.alias ?? baseDisplay}
+          placeholder={baseDisplay}
+          originalFilename={filename}
+          depth={depth}
+          onSubmit={(value) => rename.onSubmit(file.path, value)}
+          onCancel={rename.onCancel}
+        />
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={() => onSelect(file.path)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onContextMenu(e.clientX, e.clientY, file.path, file.alias);
+            }}
+            draggable
+            onDragStart={(e) =>
+              dnd.onDragStart(e, { kind: "file", path: file.path })
+            }
+            onDragEnd={dnd.onDragEnd}
+            className={`tree-item ${isSelected ? "is-selected" : ""} ${missing ? "is-missing" : ""}`}
+            style={{ paddingLeft: `${depth * 12 + 14}px`, paddingRight: "28px" }}
+            title={titleParts.join("\n")}
+          >
+            <span
+              className={`file-icon ${isMd ? "file-icon-md" : "file-icon-html"} flex-shrink-0`}
+              aria-hidden="true"
+            >
+              {missing ? <MissingIcon /> : isMd ? <MdIcon /> : <HtmlIcon />}
+            </span>
+            <span className="truncate flex-1">{display}</span>
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove(file.path);
+            }}
+            title="Remove shortcut"
+            aria-label="Remove shortcut"
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-opacity opacity-0 group-hover/shortcut:opacity-100"
+          >
+            <CloseIcon />
+          </button>
+        </>
+      )}
     </div>
+  );
+}
+
+function AliasRenameInput({
+  initial,
+  placeholder,
+  originalFilename,
+  depth,
+  onSubmit,
+  onCancel,
+}: {
+  initial: string;
+  placeholder: string;
+  originalFilename: string;
+  depth: number;
+  onSubmit: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  const settledRef = useRef(false);
+  const submit = () => {
+    if (settledRef.current) return;
+    settledRef.current = true;
+    onSubmit(value);
+  };
+  const cancel = () => {
+    if (settledRef.current) return;
+    settledRef.current = true;
+    onCancel();
+  };
+  return (
+    <div
+      className="tree-item is-selected"
+      style={{
+        paddingLeft: `${depth * 12 + 14}px`,
+        paddingRight: "8px",
+      }}
+      title={`元ファイル: ${originalFilename}`}
+    >
+      <span className="file-icon flex-shrink-0" aria-hidden="true" />
+      <input
+        // biome-ignore lint/a11y/noAutofocus: rename input should receive focus immediately
+        autoFocus
+        type="text"
+        value={value}
+        placeholder={placeholder}
+        spellCheck={false}
+        autoCapitalize="off"
+        autoComplete="off"
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            submit();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            cancel();
+          }
+        }}
+        onBlur={submit}
+        onFocus={(e) => e.currentTarget.select()}
+        className="flex-1 min-w-0 bg-transparent border-0 outline-none text-[var(--text)] text-[12.5px] px-0 py-0"
+      />
+    </div>
+  );
+}
+
+function AddFolderForm({
+  onCancel,
+  onSubmit,
+}: {
+  onCancel: () => void;
+  onSubmit: (name: string) => Promise<string | null>;
+}) {
+  const [name, setName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setErr(null);
+    if (!name.trim()) {
+      setErr("Name is required");
+      return;
+    }
+    setSubmitting(true);
+    const result = await onSubmit(name.trim());
+    setSubmitting(false);
+    if (result) setErr(result);
+    else setName("");
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="px-3 py-3 bg-[var(--surface-2)] rounded-lg fade-in">
+      <input
+        type="text"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Folder name"
+        spellCheck={false}
+        autoCapitalize="off"
+        autoComplete="off"
+        autoFocus
+        className="input-line mb-3"
+        style={{ fontSize: "12px" }}
+      />
+      {err && <div className="text-[11.5px] text-[var(--danger)] mb-3 leading-relaxed">{err}</div>}
+      <div className="flex items-center gap-3">
+        <button type="submit" disabled={submitting} className="btn-save-active disabled:opacity-40">
+          {submitting ? "Adding…" : "Add"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-[12px] text-[var(--text-subtle)] hover:text-[var(--text)] transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -1010,10 +1624,7 @@ function AddShortcutForm({
   }
 
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="px-3 py-3 bg-[var(--surface-2)] rounded-lg fade-in"
-    >
+    <form onSubmit={handleSubmit} className="px-3 py-3 bg-[var(--surface-2)] rounded-lg fade-in">
       <input
         type="text"
         value={path}
@@ -1026,17 +1637,9 @@ function AddShortcutForm({
         className="input-line font-mono mb-3"
         style={{ fontSize: "12px" }}
       />
-      {err && (
-        <div className="text-[11.5px] text-[var(--danger)] mb-3 leading-relaxed">
-          {err}
-        </div>
-      )}
+      {err && <div className="text-[11.5px] text-[var(--danger)] mb-3 leading-relaxed">{err}</div>}
       <div className="flex items-center gap-3">
-        <button
-          type="submit"
-          disabled={submitting}
-          className="btn-save-active disabled:opacity-40"
-        >
+        <button type="submit" disabled={submitting} className="btn-save-active disabled:opacity-40">
           {submitting ? "Adding…" : "Add"}
         </button>
         <button
@@ -1055,12 +1658,18 @@ function ContextMenu({
   x,
   y,
   path,
+  source,
+  alias,
   onClose,
+  onStartRename,
 }: {
   x: number;
   y: number;
   path: string;
+  source: "root" | "shortcut";
+  alias?: string;
   onClose: () => void;
+  onStartRename: (path: string) => void;
 }) {
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -1090,21 +1699,25 @@ function ContextMenu({
     onClose();
   };
 
-  const MENU_W = 180;
-  const MENU_H = 44;
+  const filename = path.split("/").pop() ?? path;
+  const isShortcut = source === "shortcut";
+  const itemCount = isShortcut ? 2 : 1;
+
+  const MENU_W = 200;
+  const MENU_H = 36 + itemCount * 30 + (isShortcut ? 16 : 0);
   const left = Math.min(x, window.innerWidth - MENU_W - 8);
   const top = Math.min(y, window.innerHeight - MENU_H - 8);
 
   return (
     <div
       role="menu"
-      className="fixed z-50 min-w-[170px] py-1 rounded-md fade-in"
+      className="fixed z-50 min-w-[190px] py-1 rounded-md fade-in"
       style={{
         left,
         top,
         background: "var(--surface)",
-        border: "1px solid var(--border-subtle)",
-        boxShadow: "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)",
+        boxShadow:
+          "0 12px 32px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08)",
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => {
@@ -1112,6 +1725,31 @@ function ContextMenu({
         e.stopPropagation();
       }}
     >
+      {isShortcut && (
+        <div className="px-3 pt-1.5 pb-1.5 mb-1">
+          {alias && (
+            <div className="text-[10.5px] uppercase tracking-[0.06em] text-[var(--text-subtle)] mb-0.5">
+              元ファイル
+            </div>
+          )}
+          <div
+            className="text-[11.5px] font-mono text-[var(--text-muted)] truncate"
+            title={path}
+          >
+            {filename}
+          </div>
+        </div>
+      )}
+      {isShortcut && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => onStartRename(path)}
+          className="w-full text-left px-3 py-1.5 text-[12px] text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+        >
+          表示名を変更
+        </button>
+      )}
       <button
         type="button"
         role="menuitem"
