@@ -45,3 +45,31 @@ export function formatForSave(html: string): string {
   s = s.replace(/\n+$/, "\n");
   return s;
 }
+
+// Save formatter for full HTML documents whose body interior must round-trip
+// without spurious whitespace churn (e.g. translator pipeline outputs whose
+// downstream tools diff against the file). Self-closes void tags and runs
+// prettyPrintHtml so Tiptap's single-line output gets newlines between block
+// tags (matching how the pipeline lays out files); when the input already has
+// those newlines, prettyPrintHtml is a no-op so no-edit round-trips remain
+// byte-perfect. Skips the post-<br/> newline insertion that formatForSave
+// applies because translator pipelines keep <br/> inline inside poems.
+export function formatBodyForSave(html: string): string {
+  let s = selfCloseVoidTags(html);
+  s = prettyPrintHtml(s);
+  // Reverse the preserveBlankLines placeholders back into blank lines.
+  s = s.replace(/^[ \t]*<p>[ \t]*<\/p>[ \t]*\n/gm, "\n");
+  s = s.replace(/<p>[ \t]*<\/p>/g, "");
+  s = s.replace(/\n{3,}/g, "\n\n");
+  // Collapse <aside ...>\n<p>...</p>\n</aside> back onto a single line when
+  // the aside contains a single <p> with no nested block. Matches the
+  // gutenberg-translator footnote convention where asides are inline.
+  s = s.replace(
+    /(<aside\b[^>]*>)\n(<p\b[^>]*>(?:(?!<\/?p\b)[\s\S])*?<\/p>)\n(<\/aside>)/g,
+    "$1$2$3",
+  );
+  // Boundary whitespace lives in the full-document prefix/suffix, so trim
+  // leading/trailing newlines here to keep the body content boundary clean.
+  s = s.replace(/^\n+/, "").replace(/\n+$/, "");
+  return s;
+}

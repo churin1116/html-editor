@@ -1,6 +1,7 @@
 "use client";
 
 import { Details, type DetailsDefaultState, Summary } from "@/lib/details-node";
+import { Aside, Div, ParagraphClass, Span } from "@/lib/passthrough-nodes";
 import { loadScroll, saveScroll } from "@/lib/scroll-memory";
 import { Section } from "@/lib/section-node";
 import { extractImageFilesFromDataTransfer, uploadImage } from "@/lib/upload-image";
@@ -41,9 +42,32 @@ export function Editor({
   const editor = useEditor({
     extensions: [
       StarterKit,
-      Link.configure({
+      // Extend Link so anchor attributes used by translator-output content
+      // (role="doc-noteref", data-note-id) round-trip cleanly. Configure
+      // target=null to suppress Tiptap's default target="_blank" merge,
+      // since internal anchors (href="#...") in these files should not gain
+      // a target attr they didn't originally have.
+      Link.extend({
+        addAttributes() {
+          return {
+            ...this.parent?.(),
+            role: {
+              default: null,
+              parseHTML: (el) => el.getAttribute("role"),
+              renderHTML: (attrs) => (attrs.role ? { role: attrs.role } : {}),
+            },
+            "data-note-id": {
+              default: null,
+              parseHTML: (el) => el.getAttribute("data-note-id"),
+              renderHTML: (attrs) =>
+                attrs["data-note-id"] ? { "data-note-id": attrs["data-note-id"] } : {},
+            },
+          };
+        },
+      }).configure({
         openOnClick: false,
-        HTMLAttributes: { rel: "noopener noreferrer" },
+        // biome-ignore lint/suspicious/noExplicitAny: HTMLAttributes typing rejects null but Tiptap accepts it as "omit this attr".
+        HTMLAttributes: { rel: null, target: null, class: null } as any,
       }),
       Image,
       Table.configure({ resizable: true }),
@@ -53,6 +77,10 @@ export function Editor({
       Details,
       Summary,
       Section,
+      Div,
+      Aside,
+      Span,
+      ParagraphClass,
     ],
     content,
     editable,
@@ -132,6 +160,7 @@ export function Editor({
     }
   }, [content, editor, path]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `editor` is intentional — the scroll-container div only mounts after useEditor returns a non-null instance.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || !path) return;

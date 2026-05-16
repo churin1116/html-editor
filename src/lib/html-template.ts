@@ -70,6 +70,42 @@ export function classifyHtml(raw: string): HtmlShape {
   return "fragment";
 }
 
+export type FullDocumentSplit = {
+  prefix: string;
+  bodyContent: string;
+  suffix: string;
+};
+
+// Split a full HTML document into the head/wrap that must be preserved and
+// the body interior that Tiptap is allowed to edit. The split is exact —
+// joinFullDocument(split(raw)) === raw whenever this returns non-null.
+//
+// Returns null when <body> or </body> can't be located, in which case the
+// caller should fall back to read-only behavior. Boundary whitespace right
+// inside <body>...</body> (e.g. the blank line that translator-output files
+// keep between <body> and the first <div>) is absorbed into prefix/suffix so
+// it round-trips byte-identically without flowing through Tiptap.
+export function splitFullDocument(raw: string): FullDocumentSplit | null {
+  const openMatch = raw.match(/<body\b[^>]*>/i);
+  if (!openMatch || openMatch.index === undefined) return null;
+  const bodyOpenEnd = openMatch.index + openMatch[0].length;
+  const closeIdx = raw.toLowerCase().lastIndexOf("</body>");
+  if (closeIdx < bodyOpenEnd) return null;
+  let contentStart = bodyOpenEnd;
+  while (contentStart < closeIdx && /\s/.test(raw[contentStart])) contentStart++;
+  let contentEnd = closeIdx;
+  while (contentEnd > contentStart && /\s/.test(raw[contentEnd - 1])) contentEnd--;
+  return {
+    prefix: raw.slice(0, contentStart),
+    bodyContent: raw.slice(contentStart, contentEnd),
+    suffix: raw.slice(contentEnd),
+  };
+}
+
+export function joinFullDocument(split: FullDocumentSplit, newBody: string): string {
+  return split.prefix + newBody + split.suffix;
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")

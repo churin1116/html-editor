@@ -26,6 +26,7 @@ type LoadedFile = {
   mtimeMs: number;
   managed: boolean;
   shape: HtmlShape | null;
+  editable: boolean;
 };
 
 const LAST_PATH_COOKIE = "lastSelectedPath";
@@ -52,6 +53,7 @@ export function EditorShell({
     diskTitle: string | null;
     diskShape: HtmlShape | null;
     diskManaged: boolean | null;
+    diskEditable: boolean | null;
     currentMtimeMs: number;
   } | null>(null);
 
@@ -88,10 +90,8 @@ export function EditorShell({
 
   useEffect(() => {
     if (initialFile?.format !== "html") return;
-    if (initialFile.shape === "full-document") {
-      toast.error("Read-only — full HTML document (head/doctype can't round-trip)");
-    } else if (initialFile.shape === "fragment") {
-      toast("Fragment HTML — saved as-is (no Chameleon wrapping)");
+    if (initialFile.shape === "full-document" && !initialFile.editable) {
+      toast.error("Read-only — couldn't locate <body> tags");
     }
   }, [initialFile]);
 
@@ -124,12 +124,8 @@ export function EditorShell({
       setFile(data);
       setDraft(data.content);
       setDirty(false);
-      if (data.format === "html") {
-        if (data.shape === "full-document") {
-          toast.error("Read-only — full HTML document (head/doctype can't round-trip)");
-        } else if (data.shape === "fragment") {
-          toast("Fragment HTML — saved as-is (no Chameleon wrapping)");
-        }
+      if (data.format === "html" && data.shape === "full-document" && !data.editable) {
+        toast.error("Read-only — couldn't locate <body> tags");
       }
     } catch (e) {
       toast.error(String(e));
@@ -150,8 +146,8 @@ export function EditorShell({
 
   const handleSave = useCallback(async () => {
     if (!file) return;
-    if (file.shape === "full-document") {
-      toast.error("Read-only — open in a text editor to modify head/doctype");
+    if (!file.editable) {
+      toast.error("Read-only — open in a text editor");
       return;
     }
     try {
@@ -172,6 +168,7 @@ export function EditorShell({
           diskTitle: data.diskTitle ?? null,
           diskShape: (data.diskShape ?? null) as HtmlShape | null,
           diskManaged: data.diskManaged ?? null,
+          diskEditable: data.diskEditable ?? null,
           currentMtimeMs: data.currentMtimeMs,
         });
         return;
@@ -202,24 +199,22 @@ export function EditorShell({
       if (action === "reload") {
         const newShape = conflict.diskShape ?? file.shape;
         const newManaged = conflict.diskManaged ?? file.managed;
+        const newEditable = conflict.diskEditable ?? file.editable;
         setFile({
           ...file,
           content: conflict.diskContent,
           title: conflict.diskTitle ?? file.title,
           shape: newShape,
           managed: newManaged,
+          editable: newEditable,
           mtimeMs: conflict.currentMtimeMs,
         });
         setDraft(conflict.diskContent);
         setDirty(false);
         setConflict(null);
         toast.success("Reloaded from disk");
-        if (
-          file.format === "html" &&
-          newShape === "full-document" &&
-          file.shape !== "full-document"
-        ) {
-          toast.error("File is now a full HTML document — read-only");
+        if (file.format === "html" && file.editable && !newEditable) {
+          toast.error("File became read-only — couldn't locate <body> tags");
         }
         return;
       }
@@ -313,12 +308,11 @@ export function EditorShell({
             <HamburgerIcon />
           </button>
         )}
-        {file?.shape === "full-document" && (
+        {file && !file.editable && (
           <div className="px-5 py-2 text-[12px] bg-[var(--surface-2)] border-b border-[var(--border-subtle)] text-[var(--text-muted)]">
-            Read-only — this file is a full HTML document with{" "}
-            <code className="px-1 rounded bg-[var(--surface)]">&lt;head&gt;</code> /{" "}
-            <code className="px-1 rounded bg-[var(--surface)]">doctype</code>. Edits are disabled
-            because Tiptap can't preserve those wrappers on save.
+            Read-only — couldn't locate{" "}
+            <code className="px-1 rounded bg-[var(--surface)]">&lt;body&gt;</code> tags. Open in a
+            text editor to modify.
           </div>
         )}
         <div className="flex-1 overflow-hidden">
@@ -335,7 +329,7 @@ export function EditorShell({
                 content={draft}
                 onChange={handleChange}
                 editorRef={htmlEditorRef}
-                editable={file.shape !== "full-document"}
+                editable={file.editable}
                 path={file.path}
               />
             )

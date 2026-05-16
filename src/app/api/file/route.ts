@@ -2,8 +2,13 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { detectFormat } from "@/lib/format";
 import { PathNotAllowedError, resolveSafePath } from "@/lib/fs-safe";
-import { formatForSave } from "@/lib/html-pretty";
-import { classifyHtml, wrapContent } from "@/lib/html-template";
+import { formatBodyForSave, formatForSave } from "@/lib/html-pretty";
+import {
+  classifyHtml,
+  joinFullDocument,
+  splitFullDocument,
+  wrapContent,
+} from "@/lib/html-template";
 import { loadFileFromDisk } from "@/lib/load-file";
 import { NextResponse } from "next/server";
 
@@ -67,6 +72,7 @@ export async function PUT(req: Request) {
           diskTitle: ok ? fresh.title : null,
           diskShape: ok ? fresh.shape : null,
           diskManaged: ok ? fresh.managed : null,
+          diskEditable: ok ? fresh.editable : null,
         },
         { status: 409 },
       );
@@ -80,24 +86,38 @@ export async function PUT(req: Request) {
       // Three shapes:
       //   managed       → has data-html-editor marker; rewrap with Chameleon shell
       //   fragment      → no doctype/html/head/body; save raw with pretty-print
-      //   full-document → hand-authored full HTML; refuse to save because
-      //                   Tiptap silently drops <head> and doctype on parse
+      //   full-document → hand-authored full HTML; preserve head/doctype by
+      //                   re-reading the on-disk wrap and replacing only the
+      //                   body interior. Refuse the save if <body> tags are
+      //                   missing (no safe place to stitch the edit back in).
       let shape: "managed" | "fragment" | "full-document" = "managed";
+      let existingRaw: string | null = null;
       if (exists) {
-        const existingRaw = await readFile(absolute, "utf8");
+        existingRaw = await readFile(absolute, "utf8");
         shape = classifyHtml(existingRaw);
       }
       if (shape === "full-document") {
-        return NextResponse.json(
-          {
-            error: "read-only",
-            message:
-              'This file is a full HTML document with <head>/doctype, which this editor cannot round-trip safely. Open it in a text editor, or add data-html-editor="1" to the content article to opt in.',
-          },
-          { status: 422 },
-        );
+        if (existingRaw === null) {
+          return NextResponse.json(
+            { error: "Cannot create new full-document files" },
+            { status: 422 },
+          );
+        }
+        const split = splitFullDocument(existingRaw);
+        if (!split) {
+          return NextResponse.json(
+            {
+              error: "read-only",
+              message:
+                "This full HTML document is missing <body> tags, so the editor cannot stitch edits back without risking head/doctype loss. Open it in a text editor instead.",
+            },
+            { status: 422 },
+          );
+        }
+        toWrite = joinFullDocument(split, formatBodyForSave(content));
+      } else {
+        toWrite = shape === "managed" ? wrapContent(content, safeTitle) : formatForSave(content);
       }
-      toWrite = shape === "managed" ? wrapContent(content, safeTitle) : formatForSave(content);
     } else {
       toWrite = content;
     }
