@@ -1,26 +1,79 @@
 "use client";
 
+import { loadScroll, saveScroll } from "@/lib/scroll-memory";
 import { extractImageFilesFromDataTransfer, uploadImage } from "@/lib/upload-image";
 import { markdown } from "@codemirror/lang-markdown";
 import { EditorView } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
-import { type MutableRefObject, useEffect, useMemo } from "react";
+import { type MutableRefObject, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 export function MdEditor({
   content,
   onChange,
   viewRef,
+  path,
 }: {
   content: string;
   onChange: (md: string) => void;
   viewRef?: MutableRefObject<EditorView | null>;
+  path?: string;
 }) {
+  const [view, setView] = useState<EditorView | null>(null);
+  const restoredPathRef = useRef<string | null>(null);
+
   useEffect(() => {
     return () => {
       if (viewRef) viewRef.current = null;
     };
   }, [viewRef]);
+
+  // Restore on file switch / initial mount / external content replacement.
+  useEffect(() => {
+    if (!view || !path) return;
+    const el = view.scrollDOM;
+    const externalChange = view.state.doc.toString() !== content;
+    if (externalChange || restoredPathRef.current !== path) {
+      restoredPathRef.current = path;
+      const savedTop = loadScroll(path);
+      const id = requestAnimationFrame(() => {
+        el.scrollTop = savedTop;
+      });
+      return () => cancelAnimationFrame(id);
+    }
+  }, [view, path, content]);
+
+  // Save on scroll (throttled) + flush on page hide.
+  useEffect(() => {
+    if (!view || !path) return;
+    const el = view.scrollDOM;
+    let timer: number | null = null;
+    const flush = () => {
+      saveScroll(path, el.scrollTop);
+      timer = null;
+    };
+    const onScroll = () => {
+      if (timer != null) return;
+      timer = window.setTimeout(flush, 200);
+    };
+    const onPageHide = () => {
+      if (timer != null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+      saveScroll(path, el.scrollTop);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      window.removeEventListener("pagehide", onPageHide);
+      if (timer != null) {
+        window.clearTimeout(timer);
+        saveScroll(path, el.scrollTop);
+      }
+    };
+  }, [view, path]);
 
   const extensions = useMemo(
     () => [
@@ -120,8 +173,9 @@ export function MdEditor({
           indentOnInput: false,
         }}
         theme="none"
-        onCreateEditor={(view) => {
-          if (viewRef) viewRef.current = view;
+        onCreateEditor={(v) => {
+          if (viewRef) viewRef.current = v;
+          setView(v);
         }}
       />
     </div>

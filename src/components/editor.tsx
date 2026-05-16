@@ -1,6 +1,7 @@
 "use client";
 
 import { Details, type DetailsDefaultState, Summary } from "@/lib/details-node";
+import { loadScroll, saveScroll } from "@/lib/scroll-memory";
 import { Section } from "@/lib/section-node";
 import { extractImageFilesFromDataTransfer, uploadImage } from "@/lib/upload-image";
 import { Image } from "@tiptap/extension-image";
@@ -12,7 +13,7 @@ import { TableRow } from "@tiptap/extension-table-row";
 import type { EditorView } from "@tiptap/pm/view";
 import { EditorContent, type Editor as TiptapEditor, useEditor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
-import { type MutableRefObject, useEffect, useState } from "react";
+import { type MutableRefObject, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 export function Editor({
@@ -20,12 +21,16 @@ export function Editor({
   onChange,
   editorRef,
   editable = true,
+  path,
 }: {
   content: string;
   onChange: (html: string) => void;
   editorRef?: MutableRefObject<TiptapEditor | null>;
   editable?: boolean;
+  path?: string;
 }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const restoredPathRef = useRef<string | null>(null);
   const [menu, setMenu] = useState<{
     x: number;
     y: number;
@@ -106,10 +111,60 @@ export function Editor({
 
   useEffect(() => {
     if (!editor) return;
-    if (editor.getHTML() !== content) {
+    const externalChange = editor.getHTML() !== content;
+    if (externalChange) {
       editor.commands.setContent(content, { emitUpdate: false });
     }
-  }, [content, editor]);
+    if (!path) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    // Restore when path changes (file switch / first mount) or when content
+    // was replaced externally (e.g., conflict-dialog "Reload from disk").
+    // Don't restore during regular typing — restoredPathRef ensures we only
+    // restore once per path unless an external change forces a reset.
+    if (externalChange || restoredPathRef.current !== path) {
+      restoredPathRef.current = path;
+      const savedTop = loadScroll(path);
+      const id = requestAnimationFrame(() => {
+        el.scrollTop = savedTop;
+      });
+      return () => cancelAnimationFrame(id);
+    }
+  }, [content, editor, path]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !path) return;
+    let timer: number | null = null;
+    const flush = () => {
+      saveScroll(path, el.scrollTop);
+      timer = null;
+    };
+    const onScroll = () => {
+      if (timer != null) return;
+      timer = window.setTimeout(flush, 200);
+    };
+    const onPageHide = () => {
+      if (timer != null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+      saveScroll(path, el.scrollTop);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      window.removeEventListener("pagehide", onPageHide);
+      if (timer != null) {
+        window.clearTimeout(timer);
+        saveScroll(path, el.scrollTop);
+      }
+    };
+    // `editor` is in deps because the scroll-container <div> only mounts once
+    // useEditor returns an instance; without it this effect would fire too
+    // early (when the component renders null) and never re-run.
+  }, [path, editor]);
 
   useEffect(() => {
     if (!editor) return;
@@ -180,7 +235,7 @@ export function Editor({
   if (!editor) return null;
 
   return (
-    <div className="h-full overflow-y-auto bg-canvas">
+    <div ref={scrollRef} className="h-full overflow-y-auto bg-canvas">
       <EditorContent editor={editor} className="fade-in" />
       {menu && (
         <DetailsDefaultMenu

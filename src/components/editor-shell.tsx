@@ -324,13 +324,19 @@ export function EditorShell({
         <div className="flex-1 overflow-hidden">
           {file ? (
             file.format === "md" ? (
-              <MdEditor content={draft} onChange={handleChange} viewRef={mdViewRef} />
+              <MdEditor
+                content={draft}
+                onChange={handleChange}
+                viewRef={mdViewRef}
+                path={file.path}
+              />
             ) : (
               <Editor
                 content={draft}
                 onChange={handleChange}
                 editorRef={htmlEditorRef}
                 editable={file.shape !== "full-document"}
+                path={file.path}
               />
             )
           ) : (
