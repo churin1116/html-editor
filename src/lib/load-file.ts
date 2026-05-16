@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { scopeCss } from "@/lib/css-scope";
 import { detectFormat } from "@/lib/format";
 import { PathNotAllowedError, resolveSafePath } from "@/lib/fs-safe";
 import { preserveBlankLines } from "@/lib/html-pretty";
@@ -10,6 +11,9 @@ import {
   splitFullDocument,
   unwrapContent,
 } from "@/lib/html-template";
+import { findFolderCssForPath, loadShortcutTree } from "@/lib/shortcuts";
+
+export const PREVIEW_CSS_SCOPE_CLASS = "preview-css-scope";
 
 export type LoadedFile = {
   path: string;
@@ -24,6 +28,10 @@ export type LoadedFile = {
   // when we can locate <body>...</body> tags (so head/doctype are
   // preserved on save); false when the wrap is unparseable.
   editable: boolean;
+  // Preview-only CSS scoped to the editor (.preview-css-scope). Empty when
+  // no shortcut folder for this file declared a cssPath, or when reading
+  // the CSS file failed. Never written into the saved HTML.
+  previewCss: string;
 };
 
 export type LoadFileError = {
@@ -80,6 +88,8 @@ export async function loadFileFromDisk(filePath: string): Promise<LoadedFile | L
       title = baseName;
     }
 
+    const previewCss = await loadPreviewCss(absolute);
+
     return {
       path: absolute,
       format,
@@ -89,6 +99,7 @@ export async function loadFileFromDisk(filePath: string): Promise<LoadedFile | L
       managed,
       shape,
       editable,
+      previewCss,
     };
   } catch (err: unknown) {
     if (err instanceof PathNotAllowedError) {
@@ -99,6 +110,27 @@ export async function loadFileFromDisk(filePath: string): Promise<LoadedFile | L
       return { error: "File not found", status: 404 };
     }
     return { error: e.message ?? "Unknown error", status: 500 };
+  }
+}
+
+// Resolve the CSS file declared on the nearest enclosing shortcut folder
+// (if any), read it, and scope every rule to .preview-css-scope so it can't
+// leak into the editor chrome. Failures are swallowed: a missing or
+// unreadable CSS file just means no preview styling, not a load error.
+//
+// cssPath is user-controlled via ~/.config/html-editor/shortcuts.json — the
+// same trust boundary as the file paths in shortcuts. We skip resolveSafePath
+// here because the CSS is only embedded inside a scoped <style> tag in the
+// preview (no script execution path).
+async function loadPreviewCss(absolutePath: string): Promise<string> {
+  try {
+    const tree = await loadShortcutTree();
+    const cssPath = findFolderCssForPath(tree, absolutePath);
+    if (!cssPath) return "";
+    const raw = await readFile(cssPath, "utf8");
+    return scopeCss(raw, `.${PREVIEW_CSS_SCOPE_CLASS}`);
+  } catch {
+    return "";
   }
 }
 

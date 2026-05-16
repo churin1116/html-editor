@@ -9,6 +9,10 @@ export type ShortcutFolderNode = {
   id: string;
   name: string;
   children: ShortcutNode[];
+  // Absolute path to a CSS file that should be applied as a preview-only
+  // stylesheet when opening any file under this folder. The CSS is scoped
+  // to the editor preview and never written into the saved HTML.
+  cssPath?: string;
 };
 export type ShortcutNode = ShortcutFileNode | ShortcutFolderNode;
 
@@ -18,6 +22,7 @@ export type ShortcutFolderWithStatus = {
   id: string;
   name: string;
   children: ShortcutNodeWithStatus[];
+  cssPath?: string;
 };
 export type ShortcutNodeWithStatus = ShortcutFileWithStatus | ShortcutFolderWithStatus;
 
@@ -36,7 +41,11 @@ function normalizeNode(raw: unknown): ShortcutNode | null {
     const name = typeof obj.name === "string" ? obj.name : "Folder";
     const rawChildren = Array.isArray(obj.children) ? obj.children : [];
     const children = rawChildren.map(normalizeNode).filter((n): n is ShortcutNode => n !== null);
-    return { type: "folder", id, name, children };
+    const folder: ShortcutFolderNode = { type: "folder", id, name, children };
+    if (typeof obj.cssPath === "string" && obj.cssPath.trim()) {
+      folder.cssPath = path.resolve(obj.cssPath.trim());
+    }
+    return folder;
   }
   // Legacy or explicit file entry: { path } or { type: "file", path }
   if (typeof obj.path === "string") {
@@ -100,12 +109,14 @@ export async function loadShortcutTreeWithStatus(): Promise<ShortcutNodeWithStat
             return { ...n, exists: false };
           }
         }
-        return {
+        const folder: ShortcutFolderWithStatus = {
           type: "folder",
           id: n.id,
           name: n.name,
           children: await annotate(n.children),
         };
+        if (n.cssPath) folder.cssPath = n.cssPath;
+        return folder;
       }),
     );
   return annotate(tree);
@@ -120,6 +131,29 @@ export function fileExistsInTree(tree: ShortcutNode[], absolute: string): boolea
     }
   }
   return false;
+}
+
+// Walk the shortcuts tree for `filePath` and return the cssPath of the
+// deepest folder ancestor that has one. Returns null if the file is not in
+// the tree or no ancestor folder declared a cssPath.
+export function findFolderCssForPath(tree: ShortcutNode[], filePath: string): string | null {
+  let result: string | null = null;
+  const walk = (nodes: ShortcutNode[], inherited: string | null): boolean => {
+    for (const n of nodes) {
+      if (n.type === "file") {
+        if (n.path === filePath) {
+          result = inherited;
+          return true;
+        }
+      } else {
+        const next = n.cssPath ?? inherited;
+        if (walk(n.children, next)) return true;
+      }
+    }
+    return false;
+  };
+  walk(tree, null);
+  return result;
 }
 
 export function findFolder(tree: ShortcutNode[], folderId: string): ShortcutFolderNode | null {
@@ -217,6 +251,28 @@ export function newFolder(name: string): ShortcutFolderNode {
   return { type: "folder", id: randomUUID(), name, children: [] };
 }
 
+export function setFolderCssInTree(
+  tree: ShortcutNode[],
+  folderId: string,
+  cssPath: string | null,
+): { tree: ShortcutNode[]; ok: boolean } {
+  let ok = false;
+  const walk = (nodes: ShortcutNode[]): ShortcutNode[] =>
+    nodes.map((n) => {
+      if (n.type !== "folder") return n;
+      if (n.id !== folderId) {
+        return { ...n, children: walk(n.children) };
+      }
+      ok = true;
+      if (cssPath && cssPath.trim()) {
+        return { ...n, cssPath: path.resolve(cssPath.trim()) };
+      }
+      const { cssPath: _drop, ...rest } = n;
+      return { ...rest, children: n.children };
+    });
+  return { tree: walk(tree), ok };
+}
+
 export function setFileAliasInTree(
   tree: ShortcutNode[],
   absolute: string,
@@ -239,9 +295,7 @@ export function setFileAliasInTree(
   return { tree: walk(tree), ok };
 }
 
-export type MoveSource =
-  | { kind: "file"; path: string }
-  | { kind: "folder"; id: string };
+export type MoveSource = { kind: "file"; path: string } | { kind: "folder"; id: string };
 
 export function moveNodeInTree(
   tree: ShortcutNode[],
@@ -253,19 +307,11 @@ export function moveNodeInTree(
   const extract = (nodes: ShortcutNode[]): ShortcutNode[] =>
     nodes.flatMap<ShortcutNode>((n) => {
       if (extracted) return [n];
-      if (
-        source.kind === "file" &&
-        n.type === "file" &&
-        n.path === source.path
-      ) {
+      if (source.kind === "file" && n.type === "file" && n.path === source.path) {
         extracted = n;
         return [];
       }
-      if (
-        source.kind === "folder" &&
-        n.type === "folder" &&
-        n.id === source.id
-      ) {
+      if (source.kind === "folder" && n.type === "folder" && n.id === source.id) {
         extracted = n;
         return [];
       }

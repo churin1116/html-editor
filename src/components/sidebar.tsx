@@ -16,6 +16,7 @@ type ShortcutFolderNode = {
   id: string;
   name: string;
   children: ShortcutNode[];
+  cssPath?: string;
 };
 type ShortcutNode = ShortcutFileNode | ShortcutFolderNode;
 type AddFormTarget = { parentId: string | null; kind: "file" | "folder" };
@@ -90,6 +91,20 @@ type ContextMenuState = {
   alias?: string;
 };
 
+type FolderContextMenuState = {
+  x: number;
+  y: number;
+  folderId: string;
+  folderName: string;
+  cssPath?: string;
+};
+
+type FolderContextMenuOpener = (
+  x: number,
+  y: number,
+  folder: ShortcutFolderNode,
+) => void;
+
 export function Sidebar({
   selectedPath,
   onSelect,
@@ -97,6 +112,7 @@ export function Sidebar({
   onCreated,
   mode,
   onApply,
+  onFolderCssChanged,
 }: {
   selectedPath: string | null;
   onSelect: (path: string) => void;
@@ -104,6 +120,10 @@ export function Sidebar({
   onCreated: (path: string) => void;
   mode: EditorMode | null;
   onApply: (id: ActionId) => void;
+  // Fired after a folder's cssPath was changed via the sidebar context menu.
+  // EditorShell uses this to refresh just the open file's previewCss without
+  // disturbing in-progress edits.
+  onFolderCssChanged?: () => void;
 }) {
   const [roots, setRoots] = useState<AllowedRoot[]>([]);
   const [trees, setTrees] = useState<Record<string, TreeEntry[]>>({});
@@ -111,6 +131,7 @@ export function Sidebar({
   const [error, setError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [folderContextMenu, setFolderContextMenu] = useState<FolderContextMenuState | null>(null);
   const [collapsedRoots, setCollapsedRoots] = useState<Record<string, boolean>>({});
   const [shortcutTree, setShortcutTree] = useState<ShortcutNode[]>([]);
   const [shortcutsCollapsed, setShortcutsCollapsed] = useState(false);
@@ -125,17 +146,52 @@ export function Sidebar({
 
   const openContextMenu = useCallback(
     (x: number, y: number, path: string) => {
+      setFolderContextMenu(null);
       setContextMenu({ x, y, path, source: "root" });
     },
     [],
   );
   const openShortcutContextMenu = useCallback(
     (x: number, y: number, path: string, alias?: string) => {
+      setFolderContextMenu(null);
       setContextMenu({ x, y, path, source: "shortcut", alias });
     },
     [],
   );
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+  const openFolderContextMenu = useCallback<FolderContextMenuOpener>((x, y, folder) => {
+    setContextMenu(null);
+    setFolderContextMenu({
+      x,
+      y,
+      folderId: folder.id,
+      folderName: folder.name,
+      cssPath: folder.cssPath,
+    });
+  }, []);
+  const closeFolderContextMenu = useCallback(() => setFolderContextMenu(null), []);
+  const setFolderCss = useCallback(
+    async (folderId: string, cssPath: string | null) => {
+      setFolderContextMenu(null);
+      try {
+        const r = await fetch("/api/shortcuts", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "setFolderCss", folderId, cssPath }),
+        });
+        const data = await r.json();
+        if (!r.ok) {
+          setError(data.error ?? `HTTP ${r.status}`);
+          return;
+        }
+        setShortcutTree(data.shortcuts ?? []);
+        onFolderCssChanged?.();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [onFolderCssChanged],
+  );
   const [editingAliasFor, setEditingAliasFor] = useState<string | null>(null);
   const startRenameAlias = useCallback((path: string) => {
     setEditingAliasFor(path);
@@ -524,6 +580,7 @@ export function Sidebar({
                   selectedPath={selectedPath}
                   onSelect={onSelect}
                   onContextMenu={openShortcutContextMenu}
+                  onFolderContextMenu={openFolderContextMenu}
                   onRemoveFile={handleRemoveShortcut}
                   onRemoveFolder={handleRemoveFolder}
                   collapsedFolders={collapsedFolders}
@@ -642,6 +699,17 @@ export function Sidebar({
           alias={contextMenu.alias}
           onClose={closeContextMenu}
           onStartRename={startRenameAlias}
+        />
+      )}
+      {folderContextMenu && (
+        <FolderContextMenu
+          x={folderContextMenu.x}
+          y={folderContextMenu.y}
+          folderId={folderContextMenu.folderId}
+          folderName={folderContextMenu.folderName}
+          cssPath={folderContextMenu.cssPath}
+          onClose={closeFolderContextMenu}
+          onSetCss={setFolderCss}
         />
       )}
     </div>
@@ -1179,6 +1247,7 @@ function ShortcutTreeView({
   selectedPath,
   onSelect,
   onContextMenu,
+  onFolderContextMenu,
   onRemoveFile,
   onRemoveFolder,
   collapsedFolders,
@@ -1196,6 +1265,7 @@ function ShortcutTreeView({
   selectedPath: string | null;
   onSelect: (path: string) => void;
   onContextMenu: ShortcutContextMenuOpener;
+  onFolderContextMenu: FolderContextMenuOpener;
   onRemoveFile: (path: string) => void;
   onRemoveFolder: (id: string, name: string, hasChildren: boolean) => void;
   collapsedFolders: Record<string, boolean>;
@@ -1231,6 +1301,7 @@ function ShortcutTreeView({
             selectedPath={selectedPath}
             onSelect={onSelect}
             onContextMenu={onContextMenu}
+            onFolderContextMenu={onFolderContextMenu}
             onRemoveFile={onRemoveFile}
             onRemoveFolder={onRemoveFolder}
             collapsedFolders={collapsedFolders}
@@ -1255,6 +1326,7 @@ function ShortcutFolderItem({
   selectedPath,
   onSelect,
   onContextMenu,
+  onFolderContextMenu,
   onRemoveFile,
   onRemoveFolder,
   collapsedFolders,
@@ -1272,6 +1344,7 @@ function ShortcutFolderItem({
   selectedPath: string | null;
   onSelect: (path: string) => void;
   onContextMenu: ShortcutContextMenuOpener;
+  onFolderContextMenu: FolderContextMenuOpener;
   onRemoveFile: (path: string) => void;
   onRemoveFolder: (id: string, name: string, hasChildren: boolean) => void;
   collapsedFolders: Record<string, boolean>;
@@ -1311,6 +1384,11 @@ function ShortcutFolderItem({
           dnd.onDragLeave(folder.id);
         }}
         onDrop={(e) => dnd.onDrop(e, folder.id)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onFolderContextMenu(e.clientX, e.clientY, folder);
+        }}
       >
         <button
           type="button"
@@ -1326,6 +1404,13 @@ function ShortcutFolderItem({
             <FolderIcon open={open} />
           </span>
           <span className="truncate">{folder.name}</span>
+          {folder.cssPath && (
+            <span
+              className="ml-1.5 flex-shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-[var(--primary)]"
+              title={`プレビュー CSS: ${folder.cssPath}`}
+              aria-label={`プレビュー CSS が設定されています: ${folder.cssPath}`}
+            />
+          )}
         </button>
         <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover/folder:opacity-100 transition-opacity">
           <IconBtn onClick={() => onOpenAddForm(folder.id, "file")} title="Add shortcut here">
@@ -1368,6 +1453,7 @@ function ShortcutFolderItem({
             selectedPath={selectedPath}
             onSelect={onSelect}
             onContextMenu={onContextMenu}
+            onFolderContextMenu={onFolderContextMenu}
             onRemoveFile={onRemoveFile}
             onRemoveFolder={onRemoveFolder}
             collapsedFolders={collapsedFolders}
@@ -1758,6 +1844,110 @@ function ContextMenu({
       >
         パスをコピー
       </button>
+    </div>
+  );
+}
+
+function FolderContextMenu({
+  x,
+  y,
+  folderId,
+  folderName,
+  cssPath,
+  onClose,
+  onSetCss,
+}: {
+  x: number;
+  y: number;
+  folderId: string;
+  folderName: string;
+  cssPath?: string;
+  onClose: () => void;
+  onSetCss: (folderId: string, cssPath: string | null) => void;
+}) {
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    const handleAway = () => onClose();
+    document.addEventListener("keydown", handleKey);
+    document.addEventListener("click", handleAway);
+    document.addEventListener("contextmenu", handleAway);
+    document.addEventListener("scroll", handleAway, true);
+    window.addEventListener("blur", handleAway);
+    return () => {
+      document.removeEventListener("keydown", handleKey);
+      document.removeEventListener("click", handleAway);
+      document.removeEventListener("contextmenu", handleAway);
+      document.removeEventListener("scroll", handleAway, true);
+      window.removeEventListener("blur", handleAway);
+    };
+  }, [onClose]);
+
+  const handleSet = () => {
+    const initial = cssPath ?? "";
+    const input = window.prompt(
+      `プレビュー CSS のパス（絶対パス）。「${folderName}」配下のファイルを開いたときにスコープ付きで適用されます。空欄で解除。`,
+      initial,
+    );
+    if (input === null) {
+      onClose();
+      return;
+    }
+    onSetCss(folderId, input.trim() ? input.trim() : null);
+  };
+
+  const itemCount = cssPath ? 2 : 1;
+  const MENU_W = 240;
+  const MENU_H = 56 + itemCount * 30;
+  const left = Math.min(x, window.innerWidth - MENU_W - 8);
+  const top = Math.min(y, window.innerHeight - MENU_H - 8);
+
+  return (
+    <div
+      role="menu"
+      className="fixed z-50 min-w-[220px] py-1 rounded-md fade-in"
+      style={{
+        left,
+        top,
+        background: "var(--surface)",
+        boxShadow: "0 12px 32px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08)",
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+    >
+      <div className="px-3 pt-1.5 pb-1.5 mb-1">
+        <div className="text-[10.5px] uppercase tracking-[0.06em] text-[var(--text-subtle)] mb-0.5">
+          フォルダ
+        </div>
+        <div
+          className="text-[11.5px] font-mono text-[var(--text-muted)] truncate"
+          title={cssPath ?? "(プレビュー CSS 未設定)"}
+        >
+          {folderName}
+        </div>
+      </div>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={handleSet}
+        className="w-full text-left px-3 py-1.5 text-[12px] text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+      >
+        {cssPath ? "プレビュー CSS を変更..." : "プレビュー CSS を設定..."}
+      </button>
+      {cssPath && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => onSetCss(folderId, null)}
+          className="w-full text-left px-3 py-1.5 text-[12px] text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+        >
+          プレビュー CSS を解除
+        </button>
+      )}
     </div>
   );
 }

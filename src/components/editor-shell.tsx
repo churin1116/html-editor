@@ -27,6 +27,7 @@ type LoadedFile = {
   managed: boolean;
   shape: HtmlShape | null;
   editable: boolean;
+  previewCss: string;
 };
 
 const LAST_PATH_COOKIE = "lastSelectedPath";
@@ -135,6 +136,24 @@ export function EditorShell({
   useEffect(() => {
     if (selected && file?.path !== selected) loadFile(selected);
   }, [selected, file, loadFile]);
+
+  // Refresh just the previewCss of the open file (no content/draft touch) so
+  // changes made via the sidebar's folder context menu apply immediately
+  // without disturbing in-progress edits.
+  const refreshPreviewCss = useCallback(async () => {
+    if (!file) return;
+    try {
+      const res = await fetch(`/api/file?path=${encodeURIComponent(file.path)}`);
+      if (!res.ok) return;
+      const data = (await res.json()) as { previewCss?: string };
+      setFile((prev) =>
+        prev && prev.path === file.path ? { ...prev, previewCss: data.previewCss ?? "" } : prev,
+      );
+    } catch {
+      // Silent — failure just means the preview keeps the old CSS until the
+      // next file open.
+    }
+  }, [file]);
 
   const handleChange = useCallback(
     (html: string) => {
@@ -292,6 +311,7 @@ export function EditorShell({
             onCreated={handleCreated}
             mode={mode}
             onApply={applyAction}
+            onFolderCssChanged={refreshPreviewCss}
           />
         </div>
       </aside>
@@ -331,6 +351,7 @@ export function EditorShell({
                 editorRef={htmlEditorRef}
                 editable={file.editable}
                 path={file.path}
+                previewCss={file.previewCss}
               />
             )
           ) : (

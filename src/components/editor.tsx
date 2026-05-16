@@ -23,12 +23,14 @@ export function Editor({
   editorRef,
   editable = true,
   path,
+  previewCss,
 }: {
   content: string;
   onChange: (html: string) => void;
   editorRef?: MutableRefObject<TiptapEditor | null>;
   editable?: boolean;
   path?: string;
+  previewCss?: string;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const restoredPathRef = useRef<string | null>(null);
@@ -264,7 +266,11 @@ export function Editor({
   if (!editor) return null;
 
   return (
-    <div ref={scrollRef} className="h-full overflow-y-auto bg-canvas">
+    <div ref={scrollRef} className="h-full overflow-y-auto bg-canvas preview-css-scope">
+      {previewCss ? (
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: previewCss is server-scoped to .preview-css-scope via scopeCss.
+        <style dangerouslySetInnerHTML={{ __html: previewCss }} />
+      ) : null}
       <EditorContent editor={editor} className="fade-in" />
       {menu && (
         <DetailsDefaultMenu
