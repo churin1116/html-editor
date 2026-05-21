@@ -58,6 +58,48 @@ export const Aside = Node.create({
   },
 });
 
+// <figure> + <figcaption> for image-with-caption blocks. Without these, Tiptap
+// drops the <figure> wrapper on load (the <img> becomes a bare block and the
+// <figcaption> becomes a plain <p>), which loses the editorial semantics on
+// every round-trip. Pairs with the figure-aware uploadAndInsert in editor.tsx.
+export const Figure = Node.create({
+  name: "figure",
+  group: "block",
+  // Allow any block-level content so existing patterns work:
+  //   <figure><img><figcaption>...</figcaption></figure>
+  //   <figure><pre>...</pre><figcaption>...</figcaption></figure>
+  content: "block+",
+  addAttributes() {
+    return passthroughAttrs(BLOCK_ATTRS);
+  },
+  parseHTML() {
+    return [{ tag: "figure" }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["figure", HTMLAttributes, 0];
+  },
+});
+
+export const Figcaption = Node.create({
+  name: "figcaption",
+  // Sit alongside other blocks inside <figure>. Inline content only —
+  // captions are short single-line strings, not paragraphs.
+  group: "block",
+  content: "inline*",
+  // Captions belong inside <figure>; declaring this prevents Tiptap from
+  // promoting orphan <figcaption>s to top-level blocks on paste.
+  defining: true,
+  addAttributes() {
+    return passthroughAttrs(INLINE_ATTRS);
+  },
+  parseHTML() {
+    return [{ tag: "figcaption" }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["figcaption", HTMLAttributes, 0];
+  },
+});
+
 // Add class/id passthrough to StarterKit's paragraph and heading nodes so
 // `<p class="poem">` and `<h2 class="...">` round-trip without losing their
 // class. Uses addGlobalAttributes to extend the existing node attribute set

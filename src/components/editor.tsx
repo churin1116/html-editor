@@ -1,7 +1,7 @@
 "use client";
 
 import { Details, type DetailsDefaultState, Summary } from "@/lib/details-node";
-import { Aside, Div, ParagraphClass, Span } from "@/lib/passthrough-nodes";
+import { Aside, Div, Figcaption, Figure, ParagraphClass, Span } from "@/lib/passthrough-nodes";
 import { loadScroll, saveScroll } from "@/lib/scroll-memory";
 import { Section } from "@/lib/section-node";
 import { extractImageFilesFromDataTransfer, uploadImage } from "@/lib/upload-image";
@@ -11,6 +11,7 @@ import { Table } from "@tiptap/extension-table";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import { TableRow } from "@tiptap/extension-table-row";
+import { TextSelection } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import { EditorContent, type Editor as TiptapEditor, useEditor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
@@ -81,6 +82,8 @@ export function Editor({
       Section,
       Div,
       Aside,
+      Figure,
+      Figcaption,
       Span,
       ParagraphClass,
     ],
@@ -116,6 +119,28 @@ export function Editor({
           }
         }
         return false;
+      },
+      // Double-click on a <figure>'s <img> jumps the caret into the sibling
+      // <figcaption> at the end of its text. Single click keeps ProseMirror's
+      // default image-selection behaviour. Cheap shortcut for the common case
+      // "I dropped an image — now I want to write the caption."
+      handleDoubleClick: (view, _pos, event) => {
+        const target = event.target as HTMLElement;
+        if (target.tagName !== "IMG") return false;
+        const figureEl = target.closest("figure");
+        if (!figureEl) return false;
+        const figcaptionEl = figureEl.querySelector(":scope > figcaption");
+        if (!figcaptionEl) return false;
+        try {
+          const endPos = view.posAtDOM(figcaptionEl, figcaptionEl.childNodes.length);
+          const $end = view.state.doc.resolve(endPos);
+          const tr = view.state.tr.setSelection(TextSelection.near($end));
+          view.dispatch(tr);
+          view.focus();
+          return true;
+        } catch {
+          return false;
+        }
       },
       handlePaste: (view, event) => {
         const files = extractImageFilesFromDataTransfer(event.clipboardData);
@@ -399,13 +424,33 @@ async function uploadAndInsert(view: EditorView, files: File[], at?: number) {
     try {
       const url = await uploadImage(file);
       const { schema } = view.state;
-      const node = schema.nodes.image?.create({ src: url, alt: file.name || undefined });
-      if (!node) {
+      const altText = stripImageExtension(file.name);
+      const imageNode = schema.nodes.image?.create({
+        src: url,
+        alt: altText || undefined,
+      });
+      if (!imageNode) {
         toast.error("Image node type not registered", { id: toastId });
         continue;
       }
+
+      // Wrap the image in <figure class="figure"><img><figcaption></figcaption></figure>.
+      // The figcaption starts empty by design — if the user types a caption,
+      // the figure semantics are kept; if they don't, unwrapEmptyFigures
+      // strips the wrapper on save (so dropped decorative images don't leak
+      // an empty <figure> into the output). Falls back to a bare <img> if
+      // the schema lacks figure (defensive — shouldn't happen now that
+      // Figure/Figcaption are in the default extension list).
+      const figureType = schema.nodes.figure;
+      const figcaptionType = schema.nodes.figcaption;
+      let nodeToInsert = imageNode;
+      if (figureType && figcaptionType) {
+        const figcaption = figcaptionType.create(null);
+        nodeToInsert = figureType.create({ class: "figure" }, [imageNode, figcaption]);
+      }
+
       const pos = at ?? view.state.selection.from;
-      const tr = view.state.tr.insert(pos, node);
+      const tr = view.state.tr.insert(pos, nodeToInsert);
       view.dispatch(tr);
       toast.success("Image uploaded", { id: toastId });
     } catch (err) {
@@ -413,4 +458,13 @@ async function uploadAndInsert(view: EditorView, files: File[], at?: number) {
       toast.error(message, { id: toastId });
     }
   }
+}
+
+// Trim the last dotted extension off an image filename for use as alt text.
+// "diagram.png" → "diagram", "no-extension" → "no-extension".
+function stripImageExtension(name: string | undefined | null): string {
+  if (!name) return "";
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return name;
+  return name.slice(0, dot);
 }

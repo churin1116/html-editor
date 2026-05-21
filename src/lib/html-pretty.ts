@@ -23,6 +23,21 @@ export function selfCloseVoidTags(html: string): string {
   return html.replace(new RegExp(`<(${VOID_TAGS})\\b([^>]*?)(?<!/)>`, "gi"), "<$1$2/>");
 }
 
+// Strip <figure> wrappers around bare images whose caption is missing or
+// whitespace-only. The editor inserts every dropped image as
+// <figure><img><figcaption></figcaption></figure> so the editorial pattern is
+// the default — but that wrapper would otherwise leak into pages where the
+// user wanted a decorative / inline image (no caption). Unwrap rule: "user
+// typed caption text" → keep the figure; "caption left blank" → treat the
+// image as decorative and emit a bare <img>. Runs before prettyPrintHtml so
+// the figure block is still on one line and easy to match.
+export function unwrapEmptyFigures(html: string): string {
+  return html.replace(
+    /<figure\b[^>]*>\s*(<img\b[^>]*?\/?>)\s*(?:<figcaption\b[^>]*>\s*<\/figcaption>\s*)?<\/figure>/gi,
+    "$1",
+  );
+}
+
 // On load, fragment HTML often uses blank lines as visual section breaks
 // (pandoc output, hand-written prose). Tiptap drops those literal whitespaces,
 // so we materialize each run of blank lines as a single empty <p></p>
@@ -33,6 +48,7 @@ export function preserveBlankLines(html: string): string {
 
 export function formatForSave(html: string): string {
   let s = selfCloseVoidTags(html);
+  s = unwrapEmptyFigures(s);
   // Re-inject newline after <br/> so hard breaks split <p> across lines.
   s = s.replace(/<br\/>(?!\n)/g, "<br/>\n");
   s = prettyPrintHtml(s);
@@ -56,6 +72,7 @@ export function formatForSave(html: string): string {
 // applies because translator pipelines keep <br/> inline inside poems.
 export function formatBodyForSave(html: string): string {
   let s = selfCloseVoidTags(html);
+  s = unwrapEmptyFigures(s);
   s = prettyPrintHtml(s);
   // Reverse the preserveBlankLines placeholders back into blank lines.
   s = s.replace(/^[ \t]*<p>[ \t]*<\/p>[ \t]*\n/gm, "\n");
