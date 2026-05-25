@@ -20,6 +20,16 @@ export type ActionId =
   | "details"
   | "hr"
   | "ruby"
+  | "sup"
+  | "sub"
+  | "mark"
+  | "cite"
+  | "small"
+  | "ins"
+  | "del"
+  | "underline"
+  | "abbr"
+  | "dl"
   | "undo"
   | "redo";
 
@@ -40,19 +50,29 @@ export const ACTIONS: ActionDef[] = [
   { id: "h2", label: "## 見出し2", supports: ["html", "md"] },
   { id: "h3", label: "### 小見出し", supports: ["html", "md"] },
   { id: "bold", label: "強調 **…**", hint: "⌘+B", supports: ["html", "md"] },
-  { id: "italic", label: "斜体 *…*", supports: ["html", "md"] },
+  { id: "italic", label: "斜体 *…*", hint: "⌘+I", supports: ["html", "md"] },
   { id: "strike", label: "取り消し線 ~~…~~", supports: ["html", "md"] },
+  { id: "underline", label: "下線 <u>", supports: ["html"] },
   { id: "code", label: "インラインコード `…`", supports: ["html", "md"] },
+  { id: "sup", label: "上付き <sup>", supports: ["html"] },
+  { id: "sub", label: "下付き <sub>", supports: ["html"] },
+  { id: "mark", label: "ハイライト <mark>", supports: ["html"] },
+  { id: "cite", label: "書名 <cite>", supports: ["html"] },
+  { id: "small", label: "細字 <small>", supports: ["html"] },
+  { id: "ins", label: "補入 <ins>", supports: ["html"] },
+  { id: "del", label: "削除線 <del>", supports: ["html"] },
+  { id: "abbr", label: "略語 <abbr title>", supports: ["html"] },
+  { id: "ruby", label: "ルビ <ruby>", hint: "⌘+Shift+I", supports: ["html", "md"] },
   { id: "list", label: "- リスト", supports: ["html", "md"] },
   { id: "numList", label: "1. 番号付きリスト", supports: ["html", "md"] },
+  { id: "dl", label: "定義リスト <dl>", supports: ["html"] },
   { id: "quote", label: "> 引用", supports: ["html", "md"] },
   { id: "codeBlock", label: "``` コードブロック ```", supports: ["html", "md"] },
   { id: "link", label: "リンク", hint: "⌘+K", supports: ["html", "md"] },
-  { id: "unlink", label: "リンク解除", supports: ["html"] },
+  { id: "unlink", label: "装飾を解除", supports: ["html"] },
   { id: "table", label: "テーブル", icon: "table", supports: ["html", "md"] },
   { id: "details", label: "▾ 折りたたみ", supports: ["html", "md"] },
   { id: "hr", label: "--- 区切り線", supports: ["html", "md"] },
-  { id: "ruby", label: "|ルビ《るび》", hint: "⌘+Shift+I", supports: ["md"] },
   { id: "undo", label: "取り消す", hint: "⌘+Z", supports: ["html", "md"] },
   { id: "redo", label: "やり直す", hint: "⌘+Shift+Z", supports: ["html", "md"] },
 ];
@@ -87,12 +107,7 @@ function insertBlock(view: EditorView, text: string) {
   });
 }
 
-function wrap(
-  view: EditorView,
-  before: string,
-  after: string,
-  placeholder = "",
-) {
+function wrap(view: EditorView, before: string, after: string, placeholder = "") {
   const { state } = view;
   const { from, to } = state.selection.main;
   const selected = state.sliceDoc(from, to);
@@ -193,7 +208,18 @@ export function applyMdAction(view: EditorView, id: ActionId) {
     case "redo":
       redo(view);
       break;
+    // HTML-only actions are no-ops in Markdown mode.
     case "unlink":
+    case "underline":
+    case "sup":
+    case "sub":
+    case "mark":
+    case "cite":
+    case "small":
+    case "ins":
+    case "del":
+    case "abbr":
+    case "dl":
       break;
   }
   view.focus();
@@ -202,6 +228,66 @@ export function applyMdAction(view: EditorView, id: ActionId) {
 /* ============================================================
    HTML (Tiptap) dispatcher
    ============================================================ */
+
+// Insert ruby at the current selection. Requires a non-empty selection: the
+// selected text becomes the ruby base, the prompt result becomes the rt
+// annotation. Empty selection no-ops so the user doesn't end up with
+// dangling placeholder text inside a ruby node they'll have to clean up.
+function insertRuby(editor: TiptapEditor) {
+  const sel = editor.state.selection;
+  if (sel.empty) {
+    window.alert("ルビを付けたいテキストを選択してから操作してください。");
+    return;
+  }
+  const ruby = window.prompt("ルビ（rt の中身）");
+  if (!ruby) return;
+  const base = editor.state.doc.textBetween(sel.from, sel.to);
+  editor
+    .chain()
+    .focus()
+    .deleteSelection()
+    .insertContent({
+      type: "ruby",
+      content: [
+        { type: "text", text: base },
+        { type: "rt", content: [{ type: "text", text: ruby }] },
+      ],
+    })
+    .run();
+}
+
+// Wrap selected text in <abbr title="...">. Title is the expansion; without
+// it the <abbr> is semantically useless, so an empty title cancels.
+function insertAbbr(editor: TiptapEditor) {
+  const sel = editor.state.selection;
+  if (sel.empty) {
+    window.alert("略語にしたいテキストを選択してから操作してください。");
+    return;
+  }
+  const title = window.prompt("略語の説明（title 属性）");
+  if (!title) return;
+  editor.chain().focus().setMark("abbr", { title }).run();
+}
+
+// Insert an empty <dl><dt>用語</dt><dd><p>説明</p></dd></dl> structure so
+// the user can immediately tab into the placeholders and fill in the term
+// and definition.
+function insertDescriptionList(editor: TiptapEditor) {
+  editor
+    .chain()
+    .focus()
+    .insertContent({
+      type: "descriptionList",
+      content: [
+        { type: "descriptionTerm", content: [{ type: "text", text: "用語" }] },
+        {
+          type: "descriptionDetail",
+          content: [{ type: "paragraph", content: [{ type: "text", text: "説明" }] }],
+        },
+      ],
+    })
+    .run();
+}
 
 export function applyHtmlAction(editor: TiptapEditor, id: ActionId) {
   const chain = editor.chain().focus();
@@ -244,8 +330,13 @@ export function applyHtmlAction(editor: TiptapEditor, id: ActionId) {
       if (url) chain.setLink({ href: url }).run();
       break;
     }
+    // Generic "remove all inline marks at cursor". Subsumes the old
+    // "unlink" behaviour: anything wrapped around the current selection
+    // (link, italic, bold, sup, sub, mark, cite, small, ins, del, u, abbr,
+    // q, kbd, var) is stripped in one shot, so users don't need a separate
+    // menu entry per mark type.
     case "unlink":
-      chain.unsetLink().run();
+      chain.unsetAllMarks().run();
       break;
     case "table":
       chain.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
@@ -270,7 +361,30 @@ export function applyHtmlAction(editor: TiptapEditor, id: ActionId) {
     case "redo":
       chain.redo().run();
       break;
+    // Inline annotation marks added for translator-output preservation.
+    // toggleMark works uniformly: applies if absent on selection, removes
+    // if present. The unusual internal name "highlight" matches the
+    // <mark> extension declared in inline-marks.ts.
+    case "sup":
+    case "sub":
+    case "small":
+    case "cite":
+    case "ins":
+    case "del":
+    case "underline":
+      chain.toggleMark(id).run();
+      break;
+    case "mark":
+      chain.toggleMark("highlight").run();
+      break;
+    case "abbr":
+      insertAbbr(editor);
+      break;
     case "ruby":
+      insertRuby(editor);
+      break;
+    case "dl":
+      insertDescriptionList(editor);
       break;
   }
 }

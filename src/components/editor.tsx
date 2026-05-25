@@ -1,10 +1,32 @@
 "use client";
 
 import { Details, type DetailsDefaultState, Summary } from "@/lib/details-node";
+import {
+  DescriptionDetail,
+  DescriptionList,
+  DescriptionTerm,
+} from "@/lib/definition-list";
+import {
+  Abbr,
+  Cite,
+  Del,
+  HtmlMark,
+  InlineQuote,
+  Ins,
+  Kbd,
+  Small,
+  Sub,
+  Sup,
+  Underline,
+  Var_,
+} from "@/lib/inline-marks";
 import { Aside, Div, Figcaption, Figure, ParagraphClass, Span } from "@/lib/passthrough-nodes";
+import { Rp, Rt, Ruby } from "@/lib/ruby-nodes";
 import { loadScroll, saveScroll } from "@/lib/scroll-memory";
 import { Section } from "@/lib/section-node";
+import { Bold, Italic } from "@/lib/tag-preserving-marks";
 import { extractImageFilesFromDataTransfer, uploadImage } from "@/lib/upload-image";
+import { Dropcursor } from "@tiptap/extension-dropcursor";
 import { Image } from "@tiptap/extension-image";
 import { Link } from "@tiptap/extension-link";
 import { Table } from "@tiptap/extension-table";
@@ -44,7 +66,12 @@ export function Editor({
 
   const editor = useEditor({
     extensions: [
-      StarterKit,
+      // Disable StarterKit's Italic and Bold; the tag-preserving variants
+      // below replace them so <i>/<em> and <b>/<strong> round-trip without
+      // being flattened to <em>/<strong>.
+      StarterKit.configure({ italic: false, bold: false }),
+      Italic,
+      Bold,
       // Extend Link so anchor attributes used by translator-output content
       // (role="doc-noteref", data-note-id) round-trip cleanly. Configure
       // target=null to suppress Tiptap's default target="_blank" merge,
@@ -72,7 +99,12 @@ export function Editor({
         // biome-ignore lint/suspicious/noExplicitAny: HTMLAttributes typing rejects null but Tiptap accepts it as "omit this attr".
         HTMLAttributes: { rel: null, target: null, class: null } as any,
       }),
-      Image,
+      // Enable ProseMirror's native node DnD + cut/copy/paste move so users
+      // can rearrange existing images within the document.
+      Image.extend({ draggable: true }),
+      // Show a colored insertion line while dragging nodes (or external files)
+      // between paragraphs/images so the drop target is visually obvious.
+      Dropcursor.configure({ color: "var(--primary)", width: 2 }),
       Table.configure({ resizable: true }),
       TableRow,
       TableHeader,
@@ -85,6 +117,28 @@ export function Editor({
       Figure,
       Figcaption,
       Span,
+      Ruby,
+      Rt,
+      Rp,
+      // Tier 1: inline semantic tags with high gutenberg-corpus usage.
+      Sup,
+      Sub,
+      Small,
+      Cite,
+      HtmlMark,
+      // Tier 2: definition lists (dl > dt + dd) for bibliographies,
+      // dramatis personae, glossaries.
+      DescriptionList,
+      DescriptionTerm,
+      DescriptionDetail,
+      // Tier 4: low-frequency inline tags.
+      Ins,
+      Del,
+      Underline,
+      Abbr,
+      Var_,
+      InlineQuote,
+      Kbd,
       ParagraphClass,
     ],
     content,

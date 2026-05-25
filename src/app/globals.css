@@ -350,6 +350,7 @@ button { font-family: inherit; }
   outline: 2px solid var(--primary);
   outline-offset: 3px;
   border-radius: 2px;
+  cursor: move;
 }
 
 /* ============================================================

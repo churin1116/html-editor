@@ -683,7 +683,8 @@ export function Sidebar({
           href="https://github.com/churin1116/html-editor"
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center justify-center w-7 h-7 rounded-md text-[var(--text-subtle)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+          className="inline-flex items-center justify-center w-7 h-7 rounded-md hover:bg-[var(--surface-2)] transition-colors"
+          style={{ color: "var(--text)" }}
           title="View source on GitHub"
           aria-label="View source on GitHub"
         >
