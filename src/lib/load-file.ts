@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { scopeCss } from "@/lib/css-scope";
 import { detectFormat } from "@/lib/format";
 import { PathNotAllowedError, resolveSafePath } from "@/lib/fs-safe";
@@ -14,6 +16,40 @@ import {
 import { findFolderCssForPath, loadShortcutTree } from "@/lib/shortcuts";
 
 export const PREVIEW_CSS_SCOPE_CLASS = "preview-css-scope";
+
+const execFileAsync = promisify(execFile);
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Read a file, materializing it first if it turns out to be an offloaded
+// (dataless) iCloud Drive placeholder. Such files live under
+// ~/Library/Mobile Documents/com~apple~CloudDocs/… and, when not downloaded
+// locally, fail `readFile` with an odd errno ("Unknown system error -11").
+// We ask the iCloud file provider to download it (`brctl download`) and then
+// poll the read until the bytes land, so opening the file "just works".
+export async function readFileMaterializing(absolute: string): Promise<string> {
+  try {
+    return await readFile(absolute, "utf8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    // Genuine "this can't be read" errors must not be masked as a download.
+    if (code === "ENOENT" || code === "EACCES" || code === "EISDIR") throw err;
+    try {
+      await execFileAsync("brctl", ["download", absolute]);
+    } catch {
+      throw err; // brctl unavailable/failed → surface the original read error
+    }
+    // brctl returns before the download completes; poll for up to ~10s.
+    for (let i = 0; i < 40; i++) {
+      await delay(250);
+      try {
+        return await readFile(absolute, "utf8");
+      } catch {
+        // keep waiting for materialization
+      }
+    }
+    throw err;
+  }
+}
 
 export type LoadedFile = {
   path: string;
@@ -49,7 +85,7 @@ export async function loadFileFromDisk(filePath: string): Promise<LoadedFile | L
         status: 400,
       };
     }
-    const raw = await readFile(absolute, "utf8");
+    const raw = await readFileMaterializing(absolute);
     const s = await stat(absolute);
     const baseName = path.basename(absolute, path.extname(absolute));
 

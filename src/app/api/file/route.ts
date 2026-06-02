@@ -1,4 +1,4 @@
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { detectFormat } from "@/lib/format";
 import { PathNotAllowedError, resolveSafePath } from "@/lib/fs-safe";
@@ -9,7 +9,7 @@ import {
   splitFullDocument,
   wrapContent,
 } from "@/lib/html-template";
-import { loadFileFromDisk } from "@/lib/load-file";
+import { loadFileFromDisk, readFileMaterializing } from "@/lib/load-file";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -93,7 +93,7 @@ export async function PUT(req: Request) {
       let shape: "managed" | "fragment" | "full-document" = "managed";
       let existingRaw: string | null = null;
       if (exists) {
-        existingRaw = await readFile(absolute, "utf8");
+        existingRaw = await readFileMaterializing(absolute);
         shape = classifyHtml(existingRaw);
       }
       if (shape === "full-document") {
