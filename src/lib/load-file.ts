@@ -6,13 +6,7 @@ import { scopeCss } from "@/lib/css-scope";
 import { detectFormat } from "@/lib/format";
 import { PathNotAllowedError, resolveSafePath } from "@/lib/fs-safe";
 import { preserveBlankLines } from "@/lib/html-pretty";
-import {
-  type HtmlShape,
-  classifyHtml,
-  isManagedHtml,
-  splitFullDocument,
-  unwrapContent,
-} from "@/lib/html-template";
+import { type HtmlShape, classifyHtml, isManagedHtml, unwrapContent } from "@/lib/html-template";
 import { findFolderCssForPath, loadShortcutTree } from "@/lib/shortcuts";
 
 export const PREVIEW_CSS_SCOPE_CLASS = "preview-css-scope";
@@ -59,10 +53,11 @@ export type LoadedFile = {
   mtimeMs: number;
   managed: boolean;
   shape: HtmlShape | null;
-  // Whether the editor should allow editing this file. Always true for
-  // managed/fragment HTML and for markdown. For full-document HTML, true
-  // when we can locate <body>...</body> tags (so head/doctype are
-  // preserved on save); false when the wrap is unparseable.
+  // Whether the editor should allow editing this file. Currently always true:
+  // markdown and managed/fragment HTML edit via the rich editor, and
+  // full-document HTML edits as its rendered self (HtmlSource) and saves with
+  // the original <head>/doctype preserved. Kept as a defensive flag so a future
+  // shape can opt into read-only without re-plumbing.
   editable: boolean;
   // Preview-only CSS scoped to the editor (.preview-css-scope). Empty when
   // no shortcut folder for this file declared a cssPath, or when reading
@@ -98,22 +93,17 @@ export async function loadFileFromDisk(filePath: string): Promise<LoadedFile | L
       shape = classifyHtml(raw);
       managed = isManagedHtml(raw);
       if (shape === "full-document") {
-        const split = splitFullDocument(raw);
-        if (split) {
-          // Keep bodyContent's leading newlines intact: preserveBlankLines
-          // converts blank lines (\n\n+) into <p></p> placeholders so the
-          // body-leading blank line that follows <body> survives the
-          // round-trip through Tiptap.
-          content = preserveBlankLines(split.bodyContent);
-          const titleMatch = split.prefix.match(/<title>([\s\S]*?)<\/title>/i);
-          title = titleMatch ? unescapeHtmlEntities(titleMatch[1].trim()) : baseName;
-        } else {
-          // <body> tags missing — keep current read-only fallback.
-          const unwrapped = unwrapContent(raw);
-          content = preserveBlankLines(unwrapped.content);
-          title = unwrapped.title || baseName;
-          editable = false;
-        }
+        // Hand-authored full HTML (doctype/<html>/<head>/<body>) is edited as
+        // raw source in the HtmlSource editor, not flowed through Tiptap. Tiptap
+        // would strip everything outside its schema — inline <style>/<script>,
+        // radio-driven tabs, data-* attributes, SVG, header/footer wrappers.
+        // Returning the whole file verbatim lets it round-trip byte-exactly
+        // (only the user's edits change it) and lets the preview render the
+        // real styling and interactivity.
+        content = raw;
+        const titleMatch = raw.match(/<title>([\s\S]*?)<\/title>/i);
+        title = titleMatch ? unescapeHtmlEntities(titleMatch[1].trim()) : baseName;
+        editable = true;
       } else {
         const unwrapped = unwrapContent(raw);
         content = preserveBlankLines(unwrapped.content);

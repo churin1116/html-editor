@@ -2,6 +2,7 @@
 
 import { ConflictDialog, type ConflictResolution } from "@/components/conflict-dialog";
 import { Editor } from "@/components/editor";
+import { HtmlSource } from "@/components/html-source";
 import { MdEditor } from "@/components/md-editor";
 import { Sidebar } from "@/components/sidebar";
 import {
@@ -65,6 +66,10 @@ export function EditorShell({
   const htmlEditorRef = useRef<TiptapEditor | null>(null);
 
   const mode: EditorMode | null = file?.format ?? null;
+  // Full-document HTML is edited as raw source (HtmlSource), not via Tiptap.
+  const isHtmlSource = file?.format === "html" && file?.shape === "full-document";
+  // Source mode has no Tiptap selection, so hide the rich-text toolbar actions.
+  const toolbarMode: EditorMode | null = isHtmlSource ? null : mode;
 
   const applyAction = useCallback(
     (id: ActionId) => {
@@ -88,13 +93,6 @@ export function EditorShell({
     },
     [mode],
   );
-
-  useEffect(() => {
-    if (initialFile?.format !== "html") return;
-    if (initialFile.shape === "full-document" && !initialFile.editable) {
-      toast.error("Read-only — couldn't locate <body> tags");
-    }
-  }, [initialFile]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -125,9 +123,6 @@ export function EditorShell({
       setFile(data);
       setDraft(data.content);
       setDirty(false);
-      if (data.format === "html" && data.shape === "full-document" && !data.editable) {
-        toast.error("Read-only — couldn't locate <body> tags");
-      }
     } catch (e) {
       toast.error(String(e));
     }
@@ -163,46 +158,52 @@ export function EditorShell({
     [file],
   );
 
-  const handleSave = useCallback(async () => {
-    if (!file) return;
-    if (!file.editable) {
-      toast.error("Read-only — open in a text editor");
-      return;
-    }
-    try {
-      const res = await fetch("/api/file", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          path: file.path,
-          content: draft,
-          title: file.title,
-          expectedMtimeMs: file.mtimeMs,
-        }),
-      });
-      const data = await res.json();
-      if (res.status === 409) {
-        setConflict({
-          diskContent: data.diskContent ?? "",
-          diskTitle: data.diskTitle ?? null,
-          diskShape: (data.diskShape ?? null) as HtmlShape | null,
-          diskManaged: data.diskManaged ?? null,
-          diskEditable: data.diskEditable ?? null,
-          currentMtimeMs: data.currentMtimeMs,
+  const handleSave = useCallback(
+    async (overrideContent?: string) => {
+      if (!file) return;
+      if (!file.editable) {
+        toast.error("Read-only — open in a text editor");
+        return;
+      }
+      // HtmlSource saves pass the freshly serialized document so we don't race
+      // the async draft state update.
+      const contentToSave = overrideContent ?? draft;
+      try {
+        const res = await fetch("/api/file", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            path: file.path,
+            content: contentToSave,
+            title: file.title,
+            expectedMtimeMs: file.mtimeMs,
+          }),
         });
-        return;
+        const data = await res.json();
+        if (res.status === 409) {
+          setConflict({
+            diskContent: data.diskContent ?? "",
+            diskTitle: data.diskTitle ?? null,
+            diskShape: (data.diskShape ?? null) as HtmlShape | null,
+            diskManaged: data.diskManaged ?? null,
+            diskEditable: data.diskEditable ?? null,
+            currentMtimeMs: data.currentMtimeMs,
+          });
+          return;
+        }
+        if (!res.ok) {
+          toast.error(data.error);
+          return;
+        }
+        setFile({ ...file, content: contentToSave, mtimeMs: data.mtimeMs });
+        setDirty(false);
+        toast.success("Saved");
+      } catch (e) {
+        toast.error(String(e));
       }
-      if (!res.ok) {
-        toast.error(data.error);
-        return;
-      }
-      setFile({ ...file, content: draft, mtimeMs: data.mtimeMs });
-      setDirty(false);
-      toast.success("Saved");
-    } catch (e) {
-      toast.error(String(e));
-    }
-  }, [file, draft]);
+    },
+    [file, draft],
+  );
 
   const resolveConflict = useCallback(
     async (action: ConflictResolution) => {
@@ -232,9 +233,6 @@ export function EditorShell({
         setDirty(false);
         setConflict(null);
         toast.success("Reloaded from disk");
-        if (file.format === "html" && file.editable && !newEditable) {
-          toast.error("File became read-only — couldn't locate <body> tags");
-        }
         return;
       }
       // overwrite
@@ -309,7 +307,7 @@ export function EditorShell({
             onSelect={setSelected}
             refreshKey={refreshKey}
             onCreated={handleCreated}
-            mode={mode}
+            mode={toolbarMode}
             onApply={applyAction}
             onFolderCssChanged={refreshPreviewCss}
           />
@@ -328,13 +326,6 @@ export function EditorShell({
             <HamburgerIcon />
           </button>
         )}
-        {file && !file.editable && (
-          <div className="px-5 py-2 text-[12px] bg-[var(--surface-2)] border-b border-[var(--border-subtle)] text-[var(--text-muted)]">
-            Read-only — couldn't locate{" "}
-            <code className="px-1 rounded bg-[var(--surface)]">&lt;body&gt;</code> tags. Open in a
-            text editor to modify.
-          </div>
-        )}
         <div className="flex-1 overflow-hidden">
           {file ? (
             file.format === "md" ? (
@@ -342,6 +333,16 @@ export function EditorShell({
                 content={draft}
                 onChange={handleChange}
                 viewRef={mdViewRef}
+                path={file.path}
+              />
+            ) : isHtmlSource ? (
+              <HtmlSource
+                content={draft}
+                onChange={handleChange}
+                onSave={(html) => {
+                  handleChange(html);
+                  void handleSave(html);
+                }}
                 path={file.path}
               />
             ) : (

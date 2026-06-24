@@ -2,13 +2,8 @@ import { stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { detectFormat } from "@/lib/format";
 import { PathNotAllowedError, resolveSafePath } from "@/lib/fs-safe";
-import { formatBodyForSave, formatForSave } from "@/lib/html-pretty";
-import {
-  classifyHtml,
-  joinFullDocument,
-  splitFullDocument,
-  wrapContent,
-} from "@/lib/html-template";
+import { formatForSave } from "@/lib/html-pretty";
+import { classifyHtml, wrapContent } from "@/lib/html-template";
 import { loadFileFromDisk, readFileMaterializing } from "@/lib/load-file";
 import { NextResponse } from "next/server";
 
@@ -103,18 +98,10 @@ export async function PUT(req: Request) {
             { status: 422 },
           );
         }
-        const split = splitFullDocument(existingRaw);
-        if (!split) {
-          return NextResponse.json(
-            {
-              error: "read-only",
-              message:
-                "This full HTML document is missing <body> tags, so the editor cannot stitch edits back without risking head/doctype loss. Open it in a text editor instead.",
-            },
-            { status: 422 },
-          );
-        }
-        toWrite = joinFullDocument(split, formatBodyForSave(content));
+        // Edited as raw source (HtmlSource editor): `content` is the whole
+        // document. Write it back verbatim so head/doctype/scripts/inline
+        // styles and interactive markup survive byte-for-byte.
+        toWrite = content;
       } else {
         toWrite = shape === "managed" ? wrapContent(content, safeTitle) : formatForSave(content);
       }
