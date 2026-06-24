@@ -13,17 +13,41 @@ function computeWrap(src: string): { prefix: string; suffix: string } | null {
   return { prefix: src.slice(0, start), suffix: src.slice(end) };
 }
 
+// Runtime-injected nodes/attributes that scripts (the page's own and browser
+// extensions') add to the live DOM. They must NOT be baked into the saved file,
+// or e.g. the copy buttons would duplicate on every reopen.
+//   - elements: our copy buttons, Grammarly's injected custom elements.
+//   - attributes: ad-filter / Grammarly / LanguageTool markers.
+const INJECTED_ELEMENT_SELECTOR =
+  "button.copy-btn, grammarly-extension, grammarly-desktop-integration";
+const INJECTED_ATTR = /^(data-ab-filters|data-gr-|data-new-gr-|data-gramm|data-lt-)/i;
+const INJECTED_ATTR_EXACT = new Set(["cz-shortcut-listen"]);
+
+// Serialize the body's *authored* inner HTML — a clone with runtime-injected
+// nodes/attributes stripped — so saves stay clean even with page scripts and
+// extensions running in the preview.
+function cleanBodyInnerHTML(body: HTMLElement): string {
+  const clone = body.cloneNode(true) as HTMLElement;
+  for (const el of clone.querySelectorAll(INJECTED_ELEMENT_SELECTOR)) el.remove();
+  for (const el of clone.querySelectorAll<HTMLElement>("*")) {
+    for (const name of el.getAttributeNames()) {
+      if (INJECTED_ATTR.test(name) || INJECTED_ATTR_EXACT.has(name)) el.removeAttribute(name);
+    }
+  }
+  return clone.innerHTML;
+}
+
 // Full-document HTML editor that edits the *rendered* page directly.
 //
-// The file is loaded into a sandboxed iframe (allow-same-origin, NO
-// allow-scripts) so its inline <style>/linked theme CSS and radio-driven tabs
-// render exactly as they do when the file is opened normally, but the page's
-// own scripts do NOT run — so nothing mutates the DOM (no script-injected
-// nodes, no theme.js attributes) and the serialized output stays clean. The
-// document is put into designMode so the user types straight onto the rendered
-// content. On every edit we serialize the live document back to full HTML and
-// hand it up; structural markup the WYSIWYG/Tiptap path would strip
-// (<script>, inline styles, data-* attributes, tab radios) is preserved.
+// The file is loaded into a same-origin iframe with scripts ENABLED, so it
+// renders and behaves exactly as when opened normally (copy buttons, theme.js,
+// CSS tabs). The document is put into designMode so the user types straight
+// onto the rendered content. On save we reassemble original-wrapper +
+// cleaned-body (see cleanBodyInnerHTML / computeWrap): the <head>/doctype/
+// scripts come verbatim from the source and only the edited <body> is written
+// back, with script-/extension-injected nodes stripped — so structural markup
+// the WYSIWYG/Tiptap path would drop (<script>, inline styles, data-*
+// attributes, tab radios) survives and runtime cruft never accumulates.
 export function HtmlSource({
   content,
   onChange,
@@ -78,7 +102,7 @@ export function HtmlSource({
       const serialize = () => {
         const wrap = wrapRef.current;
         if (wrap && doc.body) {
-          return wrap.prefix + doc.body.innerHTML + wrap.suffix;
+          return wrap.prefix + cleanBodyInnerHTML(doc.body) + wrap.suffix;
         }
         return (doc.doctype ? "<!DOCTYPE html>\n" : "") + doc.documentElement.outerHTML;
       };
@@ -138,7 +162,10 @@ export function HtmlSource({
         ref={iframeRef}
         title="editable document"
         className="w-full h-full border-0"
-        sandbox="allow-same-origin"
+        // Same-origin with scripts enabled so the preview behaves like the real
+        // file (copy buttons, theme.js, CSS tabs). Saves stay clean via
+        // cleanBodyInnerHTML, which strips runtime-injected nodes/attributes.
+        sandbox="allow-scripts allow-same-origin allow-popups allow-modals allow-forms"
       />
     </div>
   );
