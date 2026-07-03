@@ -79,7 +79,10 @@ function rebakeFile(path: string): Outcome {
   // custom theme blocks — get a surgical swap: only the hosted <link>/<script>
   // (or a previously baked block) is replaced; everything else is preserved.
   const managed = classifyHtml(raw) === "managed";
-  if (!managed && !meta) return "not-chameleon";
+  // A hosted theme reference (or an existing baked block) also qualifies:
+  // some generated files carry the <link>/<script> without the meta tag.
+  const hasTheme = BAKED_CSS_RE.test(raw) || HOSTED_CSS_RE.test(raw);
+  if (!managed && !meta && !hasTheme) return "not-chameleon";
 
   const policy = meta?.[1] ?? "^1"; // pre-meta managed files: default to tracking major 1
   if (!force) {
@@ -107,10 +110,20 @@ function rebakeFile(path: string): Outcome {
       ? next.replace(BAKED_JS_RE, () => `<script data-chameleon-theme>${CHAMELEON_JS}</script>`)
       : next.replace(HOSTED_JS_RE, () => `<script data-chameleon-theme>${CHAMELEON_JS}</script>`);
     if (!BAKED_CSS_RE.test(next)) return "not-chameleon"; // nothing swappable found
-    next = next.replace(
-      /<meta name="chameleon" content="[^"]*"(?:\s+data-baked="[^"]*")?/,
-      `<meta name="chameleon" content="${policy === "v1" ? "^1" : policy}" data-baked="${CHAMELEON_VERSION}"`,
-    );
+    if (meta) {
+      next = next.replace(
+        /<meta name="chameleon" content="[^"]*"(?:\s+data-baked="[^"]*")?/,
+        `<meta name="chameleon" content="${policy === "v1" ? "^1" : policy}" data-baked="${CHAMELEON_VERSION}"`,
+      );
+    } else {
+      // Files that carried only the hosted <link>/<script>: add the meta so
+      // the policy/version are tracked and future runs take the update path.
+      next = next.replace(
+        /<style data-chameleon-theme>/,
+        () =>
+          `<meta name="chameleon" content="^1" data-baked="${CHAMELEON_VERSION}">\n<style data-chameleon-theme>`,
+      );
+    }
   }
 
   if (next === raw) return "up-to-date";
