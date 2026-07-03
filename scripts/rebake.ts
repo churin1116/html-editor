@@ -12,12 +12,21 @@
 // Usage:
 //   pnpm rebake <dir-or-file> [--dry-run] [--force]
 //
-// Only files carrying data-html-editor="1" (this editor's own output) are
-// touched; hand-authored full documents and fragments are skipped.
+// Two kinds of files are handled:
+//   - managed (data-html-editor="1", this editor's output): full head rewrap
+//   - other chameleon files (<meta name="chameleon">, e.g. skill-generated
+//     docs with custom theme blocks): surgical swap of the hosted
+//     <link>/<script> (or a previously baked block) only — everything else,
+//     including custom [data-theme] overrides, is preserved verbatim.
+// Files without either marker are skipped.
 
 import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
-import { CHAMELEON_VERSION } from "../src/lib/chameleon-theme.generated";
+import {
+  CHAMELEON_CSS,
+  CHAMELEON_JS,
+  CHAMELEON_VERSION,
+} from "../src/lib/chameleon-theme.generated";
 import { classifyHtml, unwrapContent, wrapContent } from "../src/lib/html-template";
 
 const args = process.argv.slice(2);
@@ -48,15 +57,31 @@ function collectHtmlFiles(path: string): string[] {
     });
 }
 
-type Outcome = "rebaked" | "up-to-date" | "pinned" | "major-blocked" | "not-managed";
+type Outcome = "rebaked" | "up-to-date" | "pinned" | "major-blocked" | "not-chameleon";
+
+// Hosted copies this tool knows how to replace with the baked theme.
+const HOSTED_CSS_RE =
+  /<link[^>]*href="https:\/\/churin1116\.github\.io\/html-chameleon\/[^"]*theme\.css"[^>]*>/;
+const HOSTED_JS_RE =
+  /<script[^>]*src="https:\/\/churin1116\.github\.io\/html-chameleon\/[^"]*theme\.js"[^>]*><\/script>/;
+const BAKED_CSS_RE = /<style data-chameleon-theme>[\s\S]*?<\/style>/;
+// Inner `</script` sequences are escaped to `<\/script` at sync time, so the
+// first real `</script>` is the block's own closer.
+const BAKED_JS_RE = /<script data-chameleon-theme>[\s\S]*?<\/script>/;
 
 function rebakeFile(path: string): Outcome {
   const raw = readFileSync(path, "utf8");
-  if (classifyHtml(raw) !== "managed") return "not-managed";
 
   const meta = raw.match(/<meta name="chameleon" content="([^"]*)"(?:\s+data-baked="([^"]*)")?/);
-  const policy = meta?.[1] ?? "^1"; // pre-meta files: default to tracking major 1
 
+  // Managed files (this editor's output) get a full head rewrap. Other
+  // chameleon files — e.g. skill-generated full documents with their own
+  // custom theme blocks — get a surgical swap: only the hosted <link>/<script>
+  // (or a previously baked block) is replaced; everything else is preserved.
+  const managed = classifyHtml(raw) === "managed";
+  if (!managed && !meta) return "not-chameleon";
+
+  const policy = meta?.[1] ?? "^1"; // pre-meta managed files: default to tracking major 1
   if (!force) {
     if (/^\d/.test(policy)) return "pinned";
     // "^1" / legacy "v1" → the major the file agreed to track.
@@ -64,8 +89,30 @@ function rebakeFile(path: string): Outcome {
     if (policyMajor && policyMajor !== currentMajor) return "major-blocked";
   }
 
-  const { content, title } = unwrapContent(raw);
-  const next = wrapContent(content, title);
+  let next: string;
+  if (managed) {
+    const { content, title } = unwrapContent(raw);
+    next = wrapContent(content, title);
+  } else {
+    // Refresh an existing baked block, else swap the hosted reference —
+    // never both: the baked theme's own header comment quotes the hosted
+    // URL, so trying the hosted pattern on an already-baked file would
+    // match inside the baked block and nest a second copy into it.
+    // Function replacements: the theme source may contain `$&`-style
+    // sequences that a string replacement would expand.
+    next = BAKED_CSS_RE.test(raw)
+      ? raw.replace(BAKED_CSS_RE, () => `<style data-chameleon-theme>${CHAMELEON_CSS}</style>`)
+      : raw.replace(HOSTED_CSS_RE, () => `<style data-chameleon-theme>${CHAMELEON_CSS}</style>`);
+    next = BAKED_JS_RE.test(next)
+      ? next.replace(BAKED_JS_RE, () => `<script data-chameleon-theme>${CHAMELEON_JS}</script>`)
+      : next.replace(HOSTED_JS_RE, () => `<script data-chameleon-theme>${CHAMELEON_JS}</script>`);
+    if (!BAKED_CSS_RE.test(next)) return "not-chameleon"; // nothing swappable found
+    next = next.replace(
+      /<meta name="chameleon" content="[^"]*"(?:\s+data-baked="[^"]*")?/,
+      `<meta name="chameleon" content="${policy === "v1" ? "^1" : policy}" data-baked="${CHAMELEON_VERSION}"`,
+    );
+  }
+
   if (next === raw) return "up-to-date";
   if (!dryRun) writeFileSync(path, next);
   return "rebaked";
@@ -77,7 +124,7 @@ const counts: Record<Outcome, number> = {
   "up-to-date": 0,
   pinned: 0,
   "major-blocked": 0,
-  "not-managed": 0,
+  "not-chameleon": 0,
 };
 
 for (const file of files) {
@@ -92,6 +139,6 @@ for (const file of files) {
 console.log(
   `\n${files.length} .html file(s) → ${counts.rebaked} rebaked${dryRun ? " (dry-run)" : ""}, ` +
     `${counts["up-to-date"]} up-to-date, ${counts.pinned} pinned, ` +
-    `${counts["major-blocked"]} major-blocked, ${counts["not-managed"]} not managed ` +
+    `${counts["major-blocked"]} major-blocked, ${counts["not-chameleon"]} not chameleon ` +
     `[theme ${CHAMELEON_VERSION}]`,
 );
