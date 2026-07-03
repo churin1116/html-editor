@@ -1,9 +1,4 @@
-import {
-  CHAMELEON_CONTRACT,
-  CHAMELEON_CSS,
-  CHAMELEON_JS,
-  CHAMELEON_VERSION,
-} from "./chameleon-theme.generated";
+import { type ChameleonTheme, GENERATED_THEME } from "./chameleon-live";
 import { formatForSave } from "./html-pretty";
 import { PROSE_CSS } from "./prose-css";
 
@@ -17,7 +12,14 @@ const CONTENT_CLOSE = "</article>";
 // (data-baked) so `pnpm rebake` can upgrade files semver-style later.
 // Files saved by older editor versions carried an external <link>/<script>;
 // their <head> is regenerated on every save, so they migrate automatically.
-export function wrapContent(innerHtml: string, title: string): string {
+//
+// `theme` defaults to the last-synced generated module; the save API passes
+// a live-read theme instead when auto-update mode is on (see chameleon-live).
+export function wrapContent(
+  innerHtml: string,
+  title: string,
+  theme: ChameleonTheme = GENERATED_THEME,
+): string {
   const safeTitle = escapeHtml(title);
   const formattedInner = formatForSave(innerHtml).replace(/\n$/, "");
   return `<!doctype html>
@@ -25,10 +27,10 @@ export function wrapContent(innerHtml: string, title: string): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="chameleon" content="${CHAMELEON_CONTRACT}" data-baked="${CHAMELEON_VERSION}">
+<meta name="chameleon" content="${theme.contract}" data-baked="${theme.version}">
 <title>${safeTitle}</title>
-<style data-chameleon-theme>${CHAMELEON_CSS}</style>
-<script data-chameleon-theme>${CHAMELEON_JS}</script>
+<style data-chameleon-theme>${theme.css}</style>
+<script data-chameleon-theme>${theme.js}</script>
 <style>${PROSE_CSS}</style>
 </head>
 <body class="bg-canvas">

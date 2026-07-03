@@ -1,10 +1,13 @@
 import { stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { bakeThemeIntoDocument, getBakePolicy, hasBakeableTheme } from "@/lib/chameleon-bake";
+import { resolveTheme } from "@/lib/chameleon-live";
 import { detectFormat } from "@/lib/format";
 import { PathNotAllowedError, resolveSafePath } from "@/lib/fs-safe";
 import { formatForSave } from "@/lib/html-pretty";
 import { classifyHtml, wrapContent } from "@/lib/html-template";
 import { loadFileFromDisk, readFileMaterializing } from "@/lib/load-file";
+import { getSettings } from "@/lib/settings";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -100,10 +103,21 @@ export async function PUT(req: Request) {
         }
         // Edited as raw source (HtmlSource editor): `content` is the whole
         // document. Write it back verbatim so head/doctype/scripts/inline
-        // styles and interactive markup survive byte-for-byte.
+        // styles and interactive markup survive byte-for-byte — except the
+        // Chameleon theme block, which auto-update mode refreshes to the
+        // resolved theme (pins via content="<exact-version>" are respected).
         toWrite = content;
+        if ((await getSettings()).themeAutoUpdate && hasBakeableTheme(content)) {
+          const { pinned } = getBakePolicy(content);
+          if (!pinned) {
+            toWrite = bakeThemeIntoDocument(content, await resolveTheme()) ?? content;
+          }
+        }
       } else {
-        toWrite = shape === "managed" ? wrapContent(content, safeTitle) : formatForSave(content);
+        toWrite =
+          shape === "managed"
+            ? wrapContent(content, safeTitle, await resolveTheme())
+            : formatForSave(content);
       }
     } else {
       toWrite = content;
@@ -150,7 +164,7 @@ export async function POST(req: Request) {
 
     const baseName = path.basename(absolute, ".html");
     const initialContent = `<h1>${escapeHtml(baseName)}</h1>\n<p></p>`;
-    const fullHtml = wrapContent(initialContent, baseName);
+    const fullHtml = wrapContent(initialContent, baseName, await resolveTheme());
     await writeFile(absolute, fullHtml, "utf8");
     const s = await stat(absolute);
     return NextResponse.json({ ok: true, path: absolute, mtimeMs: s.mtimeMs });

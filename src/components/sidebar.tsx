@@ -20,17 +20,12 @@ type ShortcutFolderNode = {
 };
 type ShortcutNode = ShortcutFileNode | ShortcutFolderNode;
 type AddFormTarget = { parentId: string | null; kind: "file" | "folder" };
-type MoveSource =
-  | { kind: "file"; path: string }
-  | { kind: "folder"; id: string };
+type MoveSource = { kind: "file"; path: string } | { kind: "folder"; id: string };
 type DropTargetId = string | "root";
 
 const DRAG_MIME = "application/x-shortcut-move";
 
-function findFolderById(
-  nodes: ShortcutNode[],
-  id: string,
-): ShortcutFolderNode | null {
+function findFolderById(nodes: ShortcutNode[], id: string): ShortcutFolderNode | null {
   for (const n of nodes) {
     if (n.type !== "folder") continue;
     if (n.id === id) return n;
@@ -71,12 +66,7 @@ type RenameAPI = {
   onCancel: () => void;
 };
 
-type ShortcutContextMenuOpener = (
-  x: number,
-  y: number,
-  path: string,
-  alias?: string,
-) => void;
+type ShortcutContextMenuOpener = (x: number, y: number, path: string, alias?: string) => void;
 type TreeEntry = {
   name: string;
   path: string;
@@ -99,11 +89,7 @@ type FolderContextMenuState = {
   cssPath?: string;
 };
 
-type FolderContextMenuOpener = (
-  x: number,
-  y: number,
-  folder: ShortcutFolderNode,
-) => void;
+type FolderContextMenuOpener = (x: number, y: number, folder: ShortcutFolderNode) => void;
 
 export function Sidebar({
   selectedPath,
@@ -144,13 +130,10 @@ export function Sidebar({
     setCollapsedFolders((prev) => ({ ...prev, [folderId]: !prev[folderId] }));
   }, []);
 
-  const openContextMenu = useCallback(
-    (x: number, y: number, path: string) => {
-      setFolderContextMenu(null);
-      setContextMenu({ x, y, path, source: "root" });
-    },
-    [],
-  );
+  const openContextMenu = useCallback((x: number, y: number, path: string) => {
+    setFolderContextMenu(null);
+    setContextMenu({ x, y, path, source: "root" });
+  }, []);
   const openShortcutContextMenu = useCallback(
     (x: number, y: number, path: string, alias?: string) => {
       setFolderContextMenu(null);
@@ -399,45 +382,39 @@ export function Sidebar({
     setAddFormFor({ parentId, kind });
   }, []);
 
-  const handleSubmitAlias = useCallback(
-    async (path: string, alias: string) => {
-      setEditingAliasFor(null);
-      const res = await fetch("/api/shortcuts", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "rename", path, alias }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        toast.error(data.error ?? "Rename failed");
-        return;
-      }
-      setShortcutTree(data.shortcuts ?? []);
-    },
-    [],
-  );
+  const handleSubmitAlias = useCallback(async (path: string, alias: string) => {
+    setEditingAliasFor(null);
+    const res = await fetch("/api/shortcuts", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "rename", path, alias }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      toast.error(data.error ?? "Rename failed");
+      return;
+    }
+    setShortcutTree(data.shortcuts ?? []);
+  }, []);
 
-  const handleMove = useCallback(
-    async (source: MoveSource, targetFolderId: string | null) => {
-      const res = await fetch("/api/shortcuts", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "move", source, targetFolderId }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        toast.error(data.error ?? "Move failed");
-        return;
-      }
-      setShortcutTree(data.shortcuts ?? []);
-      if (targetFolderId !== null) {
-        setCollapsedFolders((prev) =>
-          prev[targetFolderId] ? { ...prev, [targetFolderId]: false } : prev,
-        );
-      }
-    },
-    [],
-  );
+  const handleMove = useCallback(async (source: MoveSource, targetFolderId: string | null) => {
+    const res = await fetch("/api/shortcuts", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "move", source, targetFolderId }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      toast.error(data.error ?? "Move failed");
+      return;
+    }
+    setShortcutTree(data.shortcuts ?? []);
+    if (targetFolderId !== null) {
+      setCollapsedFolders((prev) =>
+        prev[targetFolderId] ? { ...prev, [targetFolderId]: false } : prev,
+      );
+    }
+  }, []);
 
   const dnd: DnD = {
     dragOverTarget,
@@ -679,6 +656,7 @@ export function Sidebar({
       </div>
       <div className="border-t border-[var(--border-subtle)] px-3 py-2 flex items-center gap-1">
         <HelpButton mode={mode} onApply={onApply} />
+        <SettingsButton />
         <a
           href="https://github.com/churin1116/html-editor"
           target="_blank"
@@ -806,6 +784,151 @@ function HelpButton({
         </div>
       )}
     </div>
+  );
+}
+
+function SettingsButton() {
+  const [open, setOpen] = useState(false);
+  const [autoUpdate, setAutoUpdate] = useState<boolean | null>(null);
+  const [themeVersion, setThemeVersion] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || autoUpdate !== null) return;
+    (async () => {
+      try {
+        const r = await fetch("/api/settings");
+        const data = await r.json();
+        if (r.ok) {
+          setAutoUpdate(data.settings?.themeAutoUpdate ?? true);
+          setThemeVersion(data.themeVersion ?? null);
+        }
+      } catch {
+        /* leave loading state */
+      }
+    })();
+  }, [open, autoUpdate]);
+
+  const toggleAutoUpdate = useCallback(async () => {
+    if (autoUpdate === null || busy) return;
+    setBusy(true);
+    try {
+      const r = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ themeAutoUpdate: !autoUpdate }),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        toast.error(data.error ?? "Failed to update settings");
+        return;
+      }
+      setAutoUpdate(data.settings.themeAutoUpdate);
+      setThemeVersion(data.themeVersion ?? null);
+      toast.success(
+        data.settings.themeAutoUpdate
+          ? "テーマ自動更新: ON — 保存時に最新テーマを焼き込みます"
+          : "テーマ自動更新: OFF — 同期済みの固定版を使います",
+      );
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [autoUpdate, busy]);
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center justify-center w-7 h-7 rounded-md text-[var(--text-subtle)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+        title="設定"
+        aria-label="設定を開く"
+        aria-expanded={open}
+      >
+        <GearIcon />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute bottom-full left-0 mb-2 w-[268px] py-1.5 rounded-md fade-in z-40"
+          style={{
+            background: "var(--surface)",
+            border: "1px solid var(--border-subtle)",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)",
+          }}
+        >
+          <div className="px-3 pb-1.5 pt-0.5 text-[10.5px] tracking-[0.08em] uppercase text-[var(--text-subtle)]">
+            設定
+          </div>
+          <button
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={autoUpdate ?? false}
+            disabled={autoUpdate === null || busy}
+            onClick={toggleAutoUpdate}
+            className="w-full flex items-start justify-between gap-3 px-3 py-2 text-left hover:bg-[var(--surface-2)] transition-colors disabled:opacity-50"
+          >
+            <span className="min-w-0">
+              <span className="block text-[12px] text-[var(--text)]">テーマ自動更新</span>
+              <span className="block text-[10.5px] text-[var(--text-subtle)] leading-relaxed mt-0.5">
+                保存時に html-chameleon の最新テーマを焼き込む
+                {themeVersion && <span className="font-mono">（現在 v{themeVersion}）</span>}
+              </span>
+            </span>
+            <span
+              className={`flex-shrink-0 mt-0.5 inline-flex w-8 h-[18px] rounded-full p-[2px] transition-colors ${
+                autoUpdate ? "bg-[var(--primary)]" : "bg-[var(--border-strong)]"
+              }`}
+              aria-hidden="true"
+            >
+              <span
+                className={`w-[14px] h-[14px] rounded-full bg-white transition-transform ${
+                  autoUpdate ? "translate-x-[14px]" : ""
+                }`}
+              />
+            </span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GearIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="8" r="2.2" />
+      <path d="M13.2 8c0-.38-.04-.75-.12-1.1l1.44-1.1-1.3-2.25-1.7.66a5.2 5.2 0 0 0-1.9-1.1L9.3 1.3H6.7l-.32 1.8a5.2 5.2 0 0 0-1.9 1.1l-1.7-.65-1.3 2.24 1.44 1.1a5.3 5.3 0 0 0 0 2.21L1.48 10.2l1.3 2.25 1.7-.66a5.2 5.2 0 0 0 1.9 1.1l.32 1.81h2.6l.32-1.8a5.2 5.2 0 0 0 1.9-1.1l1.7.65 1.3-2.24-1.44-1.1c.08-.36.12-.73.12-1.11z" />
+    </svg>
   );
 }
 
@@ -1361,8 +1484,7 @@ function ShortcutFolderItem({
   const open = !collapsedFolders[folder.id];
   const showForm = addFormFor?.parentId === folder.id;
   const isDragOver = dnd.dragOverTarget === folder.id;
-  const isDragging =
-    dnd.source?.kind === "folder" && dnd.source.id === folder.id;
+  const isDragging = dnd.source?.kind === "folder" && dnd.source.id === folder.id;
   return (
     <div className="group/folder">
       <div
@@ -1498,8 +1620,7 @@ function ShortcutItem({
   const display = file.alias ?? baseDisplay;
   const isMd = ext === "md" || ext === "markdown";
   const missing = file.exists === false;
-  const isDragging =
-    dnd.source?.kind === "file" && dnd.source.path === file.path;
+  const isDragging = dnd.source?.kind === "file" && dnd.source.path === file.path;
   const isEditing = rename.editingPath === file.path;
   const titleParts = [
     missing ? `ファイルが見つかりません` : null,
@@ -1528,9 +1649,7 @@ function ShortcutItem({
               onContextMenu(e.clientX, e.clientY, file.path, file.alias);
             }}
             draggable
-            onDragStart={(e) =>
-              dnd.onDragStart(e, { kind: "file", path: file.path })
-            }
+            onDragStart={(e) => dnd.onDragStart(e, { kind: "file", path: file.path })}
             onDragEnd={dnd.onDragEnd}
             className={`tree-item ${isSelected ? "is-selected" : ""} ${missing ? "is-missing" : ""}`}
             style={{ paddingLeft: `${depth * 12 + 14}px`, paddingRight: "28px" }}
@@ -1803,8 +1922,7 @@ function ContextMenu({
         left,
         top,
         background: "var(--surface)",
-        boxShadow:
-          "0 12px 32px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08)",
+        boxShadow: "0 12px 32px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08)",
       }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => {
@@ -1819,10 +1937,7 @@ function ContextMenu({
               元ファイル
             </div>
           )}
-          <div
-            className="text-[11.5px] font-mono text-[var(--text-muted)] truncate"
-            title={path}
-          >
+          <div className="text-[11.5px] font-mono text-[var(--text-muted)] truncate" title={path}>
             {filename}
           </div>
         </div>
