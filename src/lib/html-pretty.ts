@@ -46,12 +46,52 @@ export function preserveBlankLines(html: string): string {
   return html.replace(/\n[ \t]*(\n[ \t]*)+/g, "\n<p></p>\n");
 }
 
+// Mark *intentional* scene-break blank paragraphs so they survive into the
+// rendered output (PDF/EPUB) instead of collapsing to insignificant
+// whitespace. A blank line in HTML source produces no visual gap when
+// rendered — only a real element does — so an empty <p> the user inserted
+// between two prose paragraphs is rewritten as <p class="blank"></p>, which
+// the consuming stylesheet (e.g. gutenberg-translator epub.css) renders as a
+// one-line gap. Empty <p> at *structural* boundaries (adjacent to a
+// </div>/<div>/<section>/<aside> — typically blank lines that were only
+// layout whitespace in the source) are left untouched, so they revert to
+// bare blank lines and don't sprinkle spurious gaps at every section break.
+// Runs after prettyPrintHtml (one block element per line) and before the
+// empty-<p> stripping below, whose regexes match bare <p></p> only and so
+// leave the classed variant intact.
+export function markSceneBreaks(html: string): string {
+  const lines = html.split("\n");
+  const isEmptyP = (l: string) => /^[ \t]*<p>[ \t]*<\/p>[ \t]*$/.test(l);
+  const findAdjacent = (i: number, dir: -1 | 1): string => {
+    for (let j = i + dir; j >= 0 && j < lines.length; j += dir) {
+      if (lines[j].trim() !== "") return lines[j].trim();
+    }
+    return "";
+  };
+  return lines
+    .map((line, i) => {
+      if (!isEmptyP(line)) return line;
+      const prev = findAdjacent(i, -1);
+      const next = findAdjacent(i, 1);
+      const proseBefore = /<\/p>$/.test(prev);
+      // next is prose if it opens a <p ...> that is not itself an empty <p></p>
+      const proseAfter = /^<p(\s|>)/.test(next) && !/^<p>[ \t]*<\/p>/.test(next);
+      if (proseBefore && proseAfter) {
+        return line.replace(/<p>[ \t]*<\/p>/, '<p class="blank"></p>');
+      }
+      return line;
+    })
+    .join("\n");
+}
+
 export function formatForSave(html: string): string {
   let s = selfCloseVoidTags(html);
   s = unwrapEmptyFigures(s);
   // Re-inject newline after <br/> so hard breaks split <p> across lines.
   s = s.replace(/<br\/>(?!\n)/g, "<br/>\n");
   s = prettyPrintHtml(s);
+  // Preserve prose-flanked empty paragraphs as scene breaks before stripping.
+  s = markSceneBreaks(s);
   // Expand empty <p></p> placeholders (and any stray empties Tiptap added at
   // the document tail) back into blank lines.
   s = s.replace(/^[ \t]*<p>[ \t]*<\/p>[ \t]*\n/gm, "\n");
@@ -74,6 +114,8 @@ export function formatBodyForSave(html: string): string {
   let s = selfCloseVoidTags(html);
   s = unwrapEmptyFigures(s);
   s = prettyPrintHtml(s);
+  // Preserve prose-flanked empty paragraphs as scene breaks before stripping.
+  s = markSceneBreaks(s);
   // Reverse the preserveBlankLines placeholders back into blank lines.
   s = s.replace(/^[ \t]*<p>[ \t]*<\/p>[ \t]*\n/gm, "\n");
   s = s.replace(/<p>[ \t]*<\/p>/g, "");
