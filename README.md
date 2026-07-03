@@ -153,17 +153,17 @@ There are two ways to register the directories the editor can read or write:
 
 ### `.html` files
 
-Saved as a self-contained document that conforms to the [Chameleon v1 theme contract](https://github.com/churin1116/html-chameleon), so they render directly in any browser and respond to any installed Chameleon theme switcher (Chrome extension, etc.):
+Saved as a self-contained document that conforms to the [Chameleon v1 theme contract](https://github.com/churin1116/html-chameleon), so they render directly in any browser — offline, via `file://`, forever — and respond to any installed Chameleon theme switcher (Chrome extension, etc.):
 
 ```html
 <!doctype html>
 <html lang="ja" data-theme="light">
 <head>
   <meta charset="utf-8">
-  <meta name="chameleon" content="v1">
+  <meta name="chameleon" content="^1" data-baked="1.0.0">
   <title>...</title>
-  <link rel="stylesheet" href="https://churin1116.github.io/html-chameleon/theme/v1/theme.css">
-  <script src="https://churin1116.github.io/html-chameleon/theme/v1/theme.js"></script>
+  <style data-chameleon-theme>/* Chameleon theme.css, baked in */</style>
+  <script data-chameleon-theme>/* Chameleon theme.js, baked in */</script>
   <style>/* prose typography only — colors come from Chameleon variables */</style>
 </head>
 <body class="bg-canvas">
@@ -175,6 +175,18 @@ Saved as a self-contained document that conforms to the [Chameleon v1 theme cont
 ```
 
 Only the inner `<article id="content">` is editable; the surrounding template is regenerated on every save. The prose CSS uses Chameleon variables (`var(--canvas)`, `var(--text)`, `var(--border)`, etc.), so light / dark / sunset / forest / midnight themes all work out of the box.
+
+#### Theme baking
+
+The Chameleon theme is **baked (inlined) into every saved file** rather than referenced from the hosted copy, so files never depend on a network fetch and never restyle themselves when the hosted theme moves. Updates are distributed explicitly, npm-style:
+
+```bash
+pnpm sync-theme            # local html-chameleon clone → src/lib/chameleon-theme.generated.ts
+pnpm rebake <dir>          # re-bake managed files with the synced theme
+pnpm rebake <dir> --dry-run
+```
+
+The `<meta name="chameleon">` tag carries the update policy and the exact baked version — `content="^1"` means "rebake may move this file to any newer 1.x, never across majors"; change it to an exact version (e.g. `content="1.0.0"`) to pin a file so `rebake` skips it. Files saved by older editor versions (external `<link>`) migrate automatically on their next save or rebake. Theme *switching* (light / dark / etc.) still works offline — the baked `theme.js` reads `localStorage` / `data-theme` at load, exactly like the hosted one.
 
 ### `.md` files
 

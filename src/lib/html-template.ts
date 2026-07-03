@@ -1,12 +1,22 @@
+import {
+  CHAMELEON_CONTRACT,
+  CHAMELEON_CSS,
+  CHAMELEON_JS,
+  CHAMELEON_VERSION,
+} from "./chameleon-theme.generated";
 import { formatForSave } from "./html-pretty";
 import { PROSE_CSS } from "./prose-css";
-
-const CHAMELEON_THEME_CSS = "https://churin1116.github.io/html-chameleon/theme/v1/theme.css";
-const CHAMELEON_THEME_JS = "https://churin1116.github.io/html-chameleon/theme/v1/theme.js";
 
 const CONTENT_OPEN = '<article id="content" class="prose-canvas" data-html-editor="1">';
 const CONTENT_CLOSE = "</article>";
 
+// The Chameleon theme is baked (inlined) into every saved file rather than
+// referenced from the hosted copy: files render offline / via file:// and
+// never restyle themselves when the hosted theme moves. The meta tag carries
+// the update policy (content, e.g. "^1") and the exact baked version
+// (data-baked) so `pnpm rebake` can upgrade files semver-style later.
+// Files saved by older editor versions carried an external <link>/<script>;
+// their <head> is regenerated on every save, so they migrate automatically.
 export function wrapContent(innerHtml: string, title: string): string {
   const safeTitle = escapeHtml(title);
   const formattedInner = formatForSave(innerHtml).replace(/\n$/, "");
@@ -15,10 +25,10 @@ export function wrapContent(innerHtml: string, title: string): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="chameleon" content="v1">
+<meta name="chameleon" content="${CHAMELEON_CONTRACT}" data-baked="${CHAMELEON_VERSION}">
 <title>${safeTitle}</title>
-<link rel="stylesheet" href="${CHAMELEON_THEME_CSS}">
-<script src="${CHAMELEON_THEME_JS}"></script>
+<style data-chameleon-theme>${CHAMELEON_CSS}</style>
+<script data-chameleon-theme>${CHAMELEON_JS}</script>
 <style>${PROSE_CSS}</style>
 </head>
 <body class="bg-canvas">

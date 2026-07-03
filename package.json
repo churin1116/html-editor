@@ -19,7 +19,9 @@
     "build": "next build",
     "start": "./scripts/with-r2-secrets.sh next start -p 26509",
     "lint": "biome check .",
-    "format": "biome format --write ."
+    "format": "biome format --write .",
+    "sync-theme": "tsx scripts/sync-theme.ts",
+    "rebake": "tsx scripts/rebake.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1045.0",
@@ -53,6 +55,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "tailwindcss": "^4.0.0",
+    "tsx": "^4.22.5",
     "typescript": "^5.7.0"
   },
   "packageManager": "pnpm@9.0.0"
