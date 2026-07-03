@@ -37,7 +37,7 @@ import { TextSelection } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import { EditorContent, type Editor as TiptapEditor, useEditor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
-import { type MutableRefObject, useEffect, useRef, useState } from "react";
+import { type MutableRefObject, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 export function Editor({
@@ -57,6 +57,18 @@ export function Editor({
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const restoredPathRef = useRef<string | null>(null);
+
+  // 強調 (em / i) の表示切替用に内容の言語を判定する。CJK/かなを含む、または
+  // Latin 文字を含まない場合は日本語扱い (傍点表示)。Latin 主体で日本語を
+  // 含まないときだけ "other" とし、西洋式の斜体に切り替える。既定 (空・新規
+  // ファイル含む) は日本語前提。
+  const contentLang = useMemo(() => {
+    // タグ名 (<p>, <span> 等) の Latin に惑わされないよう、要素を除いた本文で判定。
+    const text = content.replace(/<[^>]*>/g, "");
+    const hasCJK = /[぀-ヿ㐀-鿿豈-﫿]/.test(text);
+    const hasLatin = /[A-Za-z]/.test(text);
+    return hasCJK || !hasLatin ? "ja" : "other";
+  }, [content]);
   const [menu, setMenu] = useState<{
     x: number;
     y: number;
@@ -345,7 +357,11 @@ export function Editor({
   if (!editor) return null;
 
   return (
-    <div ref={scrollRef} className="h-full overflow-y-auto bg-canvas preview-css-scope">
+    <div
+      ref={scrollRef}
+      data-content-lang={contentLang}
+      className="h-full overflow-y-auto bg-canvas preview-css-scope"
+    >
       {previewCss ? (
         // biome-ignore lint/security/noDangerouslySetInnerHtml: previewCss is server-scoped to .preview-css-scope via scopeCss.
         <style dangerouslySetInnerHTML={{ __html: previewCss }} />

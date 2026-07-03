@@ -306,6 +306,18 @@ button { font-family: inherit; }
   padding-bottom: 8rem;
 }
 
+/* 強調 (em / i) の言語別表示 — エディタ専用トグル。
+   既定は日本語前提で傍点 (・、prose-css.ts で適用)。内容が Latin 主体だと
+   Editor が祖先 div に data-content-lang="other" を付けるので、その場合のみ
+   西洋式の斜体に戻す。保存 HTML には data-content-lang が無いため、保存ファイル
+   の file:// 表示は常に傍点 (全て日本語扱いの方針どおり)。 */
+[data-content-lang="other"] .tiptap.prose-canvas em,
+[data-content-lang="other"] .tiptap.prose-canvas i {
+  -webkit-text-emphasis-style: none;
+  text-emphasis-style: none;
+  font-style: italic;
+}
+
 /* Placeholder text for an empty <details>: summary shows "タイトル",
    the body paragraph shows "本文". Both vanish as soon as the user types,
    because the :has() condition only matches a node whose only child is

@@ -22,6 +22,16 @@ export const PROSE_CSS = `
 .prose-canvas h2 { font-size: 1.5rem; }
 .prose-canvas h3 { font-size: 1.2rem; }
 .prose-canvas p { margin: 1em 0; }
+/* 強調 (em / i) は斜体ではなく傍点 (・) で示す。和文に真の斜体は無く傾けると
+   不自然なため、日本語前提で傍点を既定とする (gutenberg-translator の EPUB/PDF
+   出力と揃える)。エディタでは内容が Latin 主体のとき data-content-lang="other"
+   で斜体に戻す (globals.css)。 */
+.prose-canvas em,
+.prose-canvas i {
+  font-style: normal;
+  -webkit-text-emphasis-style: filled dot;
+  text-emphasis-style: filled dot;
+}
 .prose-canvas a {
   color: var(--text);
   text-decoration: underline;
