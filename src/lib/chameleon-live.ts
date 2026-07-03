@@ -36,9 +36,12 @@ export const GENERATED_THEME: ChameleonTheme = {
   contract: CHAMELEON_CONTRACT,
 };
 
-// Live reads are cached per (css mtime, js mtime); a theme edit in the clone
-// invalidates naturally on the next save.
-let cache: { key: string; theme: ChameleonTheme } | null = null;
+// File contents are cached per (css mtime, js mtime); a theme edit in the
+// clone invalidates naturally on the next save. The version label is NOT
+// part of this cache — a `git tag` doesn't touch file mtimes, so caching it
+// alongside the content would stamp stale versions. `git describe` costs a
+// few ms and runs on every live resolve instead.
+let contentCache: { key: string; css: string; js: string } | null = null;
 
 export async function resolveTheme(): Promise<ChameleonTheme> {
   const settings = await getSettings();
@@ -52,13 +55,14 @@ async function readLiveTheme(cloneDir: string): Promise<ChameleonTheme | null> {
   try {
     const [cssStat, jsStat] = await Promise.all([stat(cssPath), stat(jsPath)]);
     const key = `${cssStat.mtimeMs}:${jsStat.mtimeMs}`;
-    if (cache?.key === key) return cache.theme;
-
-    const [css, jsRaw] = await Promise.all([readFile(cssPath, "utf8"), readFile(jsPath, "utf8")]);
-    // `</style` inside CSS cannot be escaped for an inline block — treat the
-    // live copy as unusable and fall back rather than emit a broken file.
-    if (/<\/style/i.test(css)) return null;
-    const js = jsRaw.replace(/<\/script/gi, "<\\/script");
+    if (contentCache?.key !== key) {
+      const [css, jsRaw] = await Promise.all([readFile(cssPath, "utf8"), readFile(jsPath, "utf8")]);
+      // `</style` inside CSS cannot be escaped for an inline block — treat the
+      // live copy as unusable and fall back rather than emit a broken file.
+      if (/<\/style/i.test(css)) return null;
+      const js = jsRaw.replace(/<\/script/gi, "<\\/script");
+      contentCache = { key, css, js };
+    }
 
     let version = GENERATED_THEME.version;
     try {
@@ -74,14 +78,12 @@ async function readLiveTheme(cloneDir: string): Promise<ChameleonTheme | null> {
       /* untagged clone — keep the generated version as the best label */
     }
     const major = version.match(/^(\d+)\./)?.[1];
-    const theme: ChameleonTheme = {
-      css,
-      js,
+    return {
+      css: contentCache.css,
+      js: contentCache.js,
       version,
       contract: major ? `^${major}` : GENERATED_THEME.contract,
     };
-    cache = { key, theme };
-    return theme;
   } catch {
     return null;
   }

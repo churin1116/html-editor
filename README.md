@@ -180,7 +180,7 @@ Only the inner `<article id="content">` is editable; the surrounding template is
 
 The Chameleon theme is **baked (inlined) into every saved file** rather than referenced from the hosted copy, so files never depend on a network fetch and never restyle themselves when the hosted theme moves.
 
-**Auto-update mode** (default ON, toggle via the gear button in the sidebar footer, persisted in `~/.config/html-editor/settings.json`): every save reads the theme freshly from the local html-chameleon clone, so theme updates flow into files as you save — no manual sync step. When the clone is missing or unreadable, saves silently fall back to the last-synced bundled copy. Turn it OFF to freeze saves at the bundled version.
+**Auto-update mode** (default ON, toggle via the gear button in the sidebar footer, persisted in `~/.config/html-editor/settings.json`): every save reads the theme freshly from the local html-chameleon clone, so theme updates flow into files as you save — no manual sync step. The clone location defaults to `~/MyApps/_chrome/260509-html-chameleon` and can be changed via the `chameleonDir` key in the same settings file. When the clone is missing or unreadable, saves silently fall back to the last-synced bundled copy. Turn it OFF to freeze saves at the bundled version.
 
 Explicit, npm-style distribution still works alongside (and is how you update many files at once):
 
