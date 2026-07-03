@@ -32,6 +32,15 @@ pnpm dev
 
 Requires Node.js 20+ and pnpm 9+.
 
+### First 60 seconds
+
+1. **Add a root** — sidebar "+ add" → give any folder a label and an absolute path (`~/notes` works). Its `.html`/`.md` files appear as a tree.
+2. **Click a file and type** — WYSIWYG editing, straight onto the rendered page. `⌘S` saves. New file: hover a root → `+`.
+3. **Everything saved is a normal `.html`** — self-contained ([Chameleon theme baked in](#theme-baking)), opens in any browser via `file://`, offline, forever. `.md` files stay Markdown on disk.
+4. **Theme** — switch light/dark/etc. per-viewer with the [Chameleon Chrome extension](https://github.com/churin1116/html-chameleon) (or `localStorage`); files don't need re-saving. The gear button (sidebar footer) holds editor settings such as [theme auto-update](#theme-baking).
+
+Tip: `/chameleon null` in Claude Code drops an empty editor-ready `.html` into `~/Downloads` — add Downloads as a root (or a shortcut) and start typing.
+
 ## Always-on setup (macOS)
 
 For one-click daily access, run the editor as a background `launchd` agent that auto-starts on login and restarts if it crashes. After setup, just double-click the desktop shortcut.
