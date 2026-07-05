@@ -301,11 +301,14 @@ export function applyHtmlAction(editor: TiptapEditor, id: ActionId) {
     case "h3":
       chain.toggleHeading({ level: 3 }).run();
       break;
+    // The tag-preserving Bold/Italic replacements (tag-preserving-marks.ts)
+    // don't register toggleBold/toggleItalic commands; toggle the marks
+    // generically instead.
     case "bold":
-      chain.toggleBold().run();
+      chain.toggleMark("bold").run();
       break;
     case "italic":
-      chain.toggleItalic().run();
+      chain.toggleMark("italic").run();
       break;
     case "strike":
       chain.toggleStrike().run();

@@ -1,6 +1,17 @@
 "use client";
 
+import { attachImageResizer } from "@/lib/image-resize";
+import { attachMarkdownInputRules, formatBlockPreservingAttrs } from "@/lib/md-input-rules";
+import { type ToolbarButton, attachSelectionToolbar } from "@/lib/selection-toolbar";
+import {
+  DEFAULT_IMAGE_WIDTH,
+  extractImageFilesFromDataTransfer,
+  measureImageFile,
+  stripImageExtension,
+  uploadImage,
+} from "@/lib/upload-image";
 import { useEffect, useRef } from "react";
+import { toast } from "sonner";
 
 // Split a full document into the wrapper around <body>...</body>. Returns null
 // when <body> can't be located (caller falls back to whole-doc serialization).
@@ -16,10 +27,11 @@ function computeWrap(src: string): { prefix: string; suffix: string } | null {
 // Runtime-injected nodes/attributes that scripts (the page's own and browser
 // extensions') add to the live DOM. They must NOT be baked into the saved file,
 // or e.g. the copy buttons would duplicate on every reopen.
-//   - elements: our copy buttons, Grammarly's injected custom elements.
+//   - elements: our copy buttons, the image-resize overlay ([data-he-ui]),
+//     Grammarly's injected custom elements.
 //   - attributes: ad-filter / Grammarly / LanguageTool markers.
 const INJECTED_ELEMENT_SELECTOR =
-  "button.copy-btn, grammarly-extension, grammarly-desktop-integration";
+  "button.copy-btn, [data-he-ui], grammarly-extension, grammarly-desktop-integration";
 const INJECTED_ATTR = /^(data-ab-filters|data-gr-|data-new-gr-|data-gramm|data-lt-)/i;
 const INJECTED_ATTR_EXACT = new Set(["cz-shortcut-listen"]);
 
@@ -34,7 +46,9 @@ function cleanBodyInnerHTML(body: HTMLElement): string {
       if (INJECTED_ATTR.test(name) || INJECTED_ATTR_EXACT.has(name)) el.removeAttribute(name);
     }
   }
-  return clone.innerHTML;
+  // U+200B: caret anchors left behind by the markdown inline-code input rule
+  // (see md-input-rules.ts) — editing aids, never authored content.
+  return clone.innerHTML.replace(/\u200B/g, "");
 }
 
 // Full-document HTML editor that edits the *rendered* page directly.
@@ -121,11 +135,57 @@ export function HtmlSource({
           onSaveRef.current?.(html);
         }
       };
+      // Image insertion: paste or drop an image file → upload to R2 → insert
+      // an <img> at the caret/drop point. Without these handlers designMode
+      // silently ignores pasted image files and a drop navigates the iframe
+      // to the local file, blowing away the document.
+      const onPaste = (e: ClipboardEvent) => {
+        const files = extractImageFilesFromDataTransfer(e.clipboardData);
+        if (files.length === 0) return;
+        e.preventDefault();
+        const sel = doc.getSelection();
+        const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
+        void uploadAndInsertIntoDoc(doc, files, range, onInput);
+      };
+      const onDragOver = (e: DragEvent) => {
+        if (e.dataTransfer?.types?.includes("Files")) e.preventDefault();
+      };
+      const onDrop = (e: DragEvent) => {
+        const files = extractImageFilesFromDataTransfer(e.dataTransfer);
+        if (files.length === 0) return;
+        e.preventDefault();
+        const range = doc.caretRangeFromPoint?.(e.clientX, e.clientY) ?? null;
+        void uploadAndInsertIntoDoc(doc, files, range, onInput);
+      };
+      // Click an image → corner handle → drag to resize (inline style width,
+      // which serializes straight into the saved body).
+      const detachResizer = attachImageResizer({
+        doc,
+        isTarget: () => true,
+        onResizeEnd: () => onInput(),
+      });
+      // Markdown-style typing shortcuts ("### " → <h3>, "**b**" → <strong>…).
+      const detachMdRules = attachMarkdownInputRules(doc);
+      // Floating format toolbar on text selection (bold/heading/list/link…).
+      const detachToolbar = attachSelectionToolbar({
+        doc,
+        buttons: buildToolbarButtons(doc, onInput),
+        isEligible: () => true,
+      });
       doc.addEventListener("input", onInput);
       doc.addEventListener("keydown", onKeyDown);
+      doc.addEventListener("paste", onPaste);
+      doc.addEventListener("dragover", onDragOver);
+      doc.addEventListener("drop", onDrop);
       detach = () => {
+        detachResizer();
+        detachMdRules();
+        detachToolbar();
         doc.removeEventListener("input", onInput);
         doc.removeEventListener("keydown", onKeyDown);
+        doc.removeEventListener("paste", onPaste);
+        doc.removeEventListener("dragover", onDragOver);
+        doc.removeEventListener("drop", onDrop);
       };
     };
 
@@ -169,4 +229,242 @@ export function HtmlSource({
       />
     </div>
   );
+}
+
+// Chrome's inline execCommands emit presentational tags (<b>/<i>/<strike>).
+// After a toggle-on, rename the elements the command touched to the semantic
+// tags the markdown input rules produce, so saved files carry one consistent
+// vocabulary (<strong>/<em>/<s>). Scoped to elements intersecting the
+// selection inside its block, so authored tags elsewhere stay untouched.
+function normalizeInlineTags(doc: Document, from: string, to: string) {
+  const sel = doc.getSelection();
+  if (!sel || sel.rangeCount === 0) return;
+  const range = sel.getRangeAt(0);
+  const saved = {
+    sc: range.startContainer,
+    so: range.startOffset,
+    ec: range.endContainer,
+    eo: range.endOffset,
+  };
+  const anchor = range.commonAncestorContainer;
+  const anchorEl = anchor instanceof HTMLElement ? anchor : anchor.parentElement;
+  const root =
+    anchorEl?.closest("p, div, li, blockquote, h1, h2, h3, h4, h5, h6, pre, body") ?? doc.body;
+  let changed = false;
+  for (const el of Array.from(root.querySelectorAll(from))) {
+    if (!range.intersectsNode(el)) continue;
+    const repl = doc.createElement(to);
+    for (const name of el.getAttributeNames()) repl.setAttribute(name, el.getAttribute(name) ?? "");
+    while (el.firstChild) repl.appendChild(el.firstChild);
+    el.replaceWith(repl);
+    changed = true;
+  }
+  if (!changed) return;
+  // The moved text nodes survive intact, so the pre-mutation boundaries can
+  // usually be restored verbatim; best-effort otherwise.
+  try {
+    const r = doc.createRange();
+    r.setStart(saved.sc, saved.so);
+    r.setEnd(saved.ec, saved.eo);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  } catch {
+    /* keep whatever selection the mutation left */
+  }
+}
+
+// Buttons for the selection toolbar in designMode. Formatting goes through
+// execCommand (undo-friendly, same as the markdown input rules); inline code
+// is DOM surgery because Chrome's engine has no code command and its
+// insertHTML sanitizer rewrites <code> (see md-input-rules.ts).
+function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
+  const exec = (cmd: string, val?: string) => {
+    doc.execCommand(cmd, false, val);
+    emit();
+  };
+  // Inline toggle + semantic-tag cleanup (only after a toggle-on; a
+  // toggle-off leaves nothing new to rename).
+  const execInline = (cmd: string, from: string, to: string) => {
+    doc.execCommand(cmd, false);
+    if (doc.queryCommandState(cmd)) normalizeInlineTags(doc, from, to);
+    emit();
+  };
+  const state = (cmd: string) => {
+    try {
+      return doc.queryCommandState(cmd);
+    } catch {
+      return false;
+    }
+  };
+  const blockValue = () => {
+    try {
+      return String(doc.queryCommandValue("formatBlock")).toLowerCase();
+    } catch {
+      return "";
+    }
+  };
+  const anchorEl = (): HTMLElement | null => {
+    const n = doc.getSelection()?.anchorNode;
+    return n ? (n instanceof HTMLElement ? n : n.parentElement) : null;
+  };
+  const inTag = (selector: string) => Boolean(anchorEl()?.closest(selector));
+  const toggleHeading = (tag: string) => {
+    formatBlockPreservingAttrs(doc, blockValue() === tag ? "p" : tag);
+    emit();
+  };
+  const toggleCode = () => {
+    const existing = anchorEl()?.closest("code");
+    if (existing?.parentNode) {
+      const parent = existing.parentNode;
+      while (existing.firstChild) parent.insertBefore(existing.firstChild, existing);
+      existing.remove();
+      emit();
+      return;
+    }
+    const sel = doc.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+    const range = sel.getRangeAt(0);
+    const code = doc.createElement("code");
+    code.appendChild(range.extractContents());
+    range.insertNode(code);
+    const r = doc.createRange();
+    r.selectNodeContents(code);
+    sel.removeAllRanges();
+    sel.addRange(r);
+    emit();
+  };
+  return [
+    {
+      label: "B",
+      title: "太字",
+      style: "font-weight: 700;",
+      action: () => execInline("bold", "b", "strong"),
+      isActive: () => state("bold"),
+    },
+    {
+      label: "I",
+      title: "斜体",
+      style: "font-style: italic; font-family: Georgia, serif;",
+      action: () => execInline("italic", "i", "em"),
+      isActive: () => state("italic"),
+    },
+    {
+      label: "S",
+      title: "取り消し線",
+      style: "text-decoration: line-through;",
+      action: () => execInline("strikeThrough", "strike", "s"),
+      isActive: () => state("strikeThrough"),
+    },
+    {
+      label: "<>",
+      title: "インラインコード",
+      style: "font-family: ui-monospace, monospace; font-size: 11px;",
+      action: toggleCode,
+      isActive: () => inTag("code"),
+    },
+    { type: "separator" },
+    {
+      label: "H2",
+      title: "見出し2",
+      action: () => toggleHeading("h2"),
+      isActive: () => blockValue() === "h2",
+    },
+    {
+      label: "H3",
+      title: "見出し3",
+      action: () => toggleHeading("h3"),
+      isActive: () => blockValue() === "h3",
+    },
+    { type: "separator" },
+    {
+      label: "•",
+      title: "箇条書きリスト",
+      action: () => exec("insertUnorderedList"),
+      isActive: () => state("insertUnorderedList"),
+    },
+    {
+      label: "1.",
+      title: "番号付きリスト",
+      action: () => exec("insertOrderedList"),
+      isActive: () => state("insertOrderedList"),
+    },
+    {
+      label: "❝",
+      title: "引用",
+      action: () => {
+        if (inTag("blockquote")) {
+          exec("outdent");
+        } else {
+          formatBlockPreservingAttrs(doc, "blockquote");
+          emit();
+        }
+      },
+      isActive: () => inTag("blockquote"),
+    },
+    { type: "separator" },
+    {
+      label: "リンク",
+      title: "リンクを設定",
+      action: () => {
+        const url = doc.defaultView?.prompt("URL");
+        if (url) exec("createLink", url);
+      },
+      isActive: () => inTag("a"),
+    },
+    {
+      label: "解除",
+      title: "装飾を解除",
+      action: () => {
+        doc.execCommand("removeFormat");
+        doc.execCommand("unlink");
+        emit();
+      },
+    },
+  ];
+}
+
+// Upload each file to R2 and insert an <img> into the designMode document at
+// `range` (falls back to the current selection, then end of body). The width
+// is capped at DEFAULT_IMAGE_WIDTH so large photos don't land full-bleed;
+// the resizer handle adjusts it afterwards.
+async function uploadAndInsertIntoDoc(
+  doc: Document,
+  files: File[],
+  range: Range | null,
+  emitChange: () => void,
+) {
+  for (const file of files) {
+    const toastId = toast.loading(`Uploading ${file.name || "image"}...`);
+    try {
+      const [url, size] = await Promise.all([uploadImage(file), measureImageFile(file)]);
+      const img = doc.createElement("img");
+      img.src = url;
+      const alt = stripImageExtension(file.name);
+      if (alt) img.alt = alt;
+      const width = size ? Math.min(size.width, DEFAULT_IMAGE_WIDTH) : DEFAULT_IMAGE_WIDTH;
+      img.style.width = `${width}px`;
+      img.style.maxWidth = "100%";
+      img.style.height = "auto";
+
+      let target = range;
+      if (!target) {
+        const sel = doc.getSelection();
+        target = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+      }
+      if (target) {
+        target.collapse(false);
+        target.insertNode(img);
+        // Insert subsequent files after this image, in order.
+        target.setStartAfter(img);
+        target.collapse(true);
+      } else {
+        doc.body.appendChild(img);
+      }
+      emitChange();
+      toast.success("Image uploaded", { id: toastId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Upload failed";
+      toast.error(message, { id: toastId });
+    }
+  }
 }
