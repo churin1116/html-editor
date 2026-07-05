@@ -1,11 +1,9 @@
 "use client";
 
+import { DescriptionDetail, DescriptionList, DescriptionTerm } from "@/lib/definition-list";
 import { Details, type DetailsDefaultState, Summary } from "@/lib/details-node";
-import {
-  DescriptionDetail,
-  DescriptionList,
-  DescriptionTerm,
-} from "@/lib/definition-list";
+import { applyHtmlAction } from "@/lib/editor-actions";
+import { attachImageResizer } from "@/lib/image-resize";
 import {
   Abbr,
   Cite,
@@ -24,8 +22,15 @@ import { Aside, Div, Figcaption, Figure, ParagraphClass, Span } from "@/lib/pass
 import { Rp, Rt, Ruby } from "@/lib/ruby-nodes";
 import { loadScroll, saveScroll } from "@/lib/scroll-memory";
 import { Section } from "@/lib/section-node";
+import { type ToolbarButton, attachSelectionToolbar } from "@/lib/selection-toolbar";
 import { Bold, Italic } from "@/lib/tag-preserving-marks";
-import { extractImageFilesFromDataTransfer, uploadImage } from "@/lib/upload-image";
+import {
+  DEFAULT_IMAGE_WIDTH,
+  extractImageFilesFromDataTransfer,
+  measureImageFile,
+  stripImageExtension,
+  uploadImage,
+} from "@/lib/upload-image";
 import { Dropcursor } from "@tiptap/extension-dropcursor";
 import { Image } from "@tiptap/extension-image";
 import { Link } from "@tiptap/extension-link";
@@ -112,8 +117,37 @@ export function Editor({
         HTMLAttributes: { rel: null, target: null, class: null } as any,
       }),
       // Enable ProseMirror's native node DnD + cut/copy/paste move so users
-      // can rearrange existing images within the document.
-      Image.extend({ draggable: true }),
+      // can rearrange existing images within the document. The width attribute
+      // (px) backs the corner-drag resizer and round-trips as an inline style
+      // so saved files render at the chosen size outside the editor too.
+      Image.extend({
+        draggable: true,
+        addAttributes() {
+          return {
+            ...this.parent?.(),
+            width: {
+              default: null,
+              parseHTML: (el) => {
+                const styleWidth = el.style?.width;
+                if (styleWidth?.endsWith("px")) {
+                  const n = Number.parseInt(styleWidth, 10);
+                  if (Number.isFinite(n)) return n;
+                }
+                const attr = el.getAttribute("width");
+                if (attr) {
+                  const n = Number.parseInt(attr, 10);
+                  if (Number.isFinite(n)) return n;
+                }
+                return null;
+              },
+              renderHTML: (attrs) =>
+                attrs.width
+                  ? { style: `width: ${attrs.width}px; max-width: 100%; height: auto` }
+                  : {},
+            },
+          };
+        },
+      }),
       // Show a colored insertion line while dragging nodes (or external files)
       // between paragraphs/images so the drop target is visually obvious.
       Dropcursor.configure({ color: "var(--primary)", width: 2 }),
@@ -338,6 +372,51 @@ export function Editor({
     return () => document.removeEventListener("contextmenu", onContextMenu, true);
   }, [editor]);
 
+  // Corner-drag resizing for images: click an <img> to show the handle, drag
+  // to resize, and persist the final width into the node's width attribute so
+  // it serializes into the saved HTML.
+  useEffect(() => {
+    if (!editor) return;
+    return attachImageResizer({
+      doc: document,
+      isTarget: (img) => editor.isEditable && editor.view.dom.contains(img),
+      onResizeEnd: (img, width) => {
+        const view = editor.view;
+        let pos: number;
+        try {
+          pos = view.posAtDOM(img, 0);
+        } catch {
+          return;
+        }
+        // posAtDOM may resolve to the position before or inside the leaf
+        // node depending on the DOM structure; check both.
+        let node = view.state.doc.nodeAt(pos);
+        let nodePos = pos;
+        if (!node || node.type.name !== "image") {
+          nodePos = pos - 1;
+          node = nodePos >= 0 ? view.state.doc.nodeAt(nodePos) : null;
+        }
+        if (!node || node.type.name !== "image") return;
+        view.dispatch(view.state.tr.setNodeMarkup(nodePos, undefined, { ...node.attrs, width }));
+      },
+    });
+  }, [editor]);
+
+  // Floating format toolbar on text selection (mirrors the designMode
+  // iframe's toolbar; actions go through the shared applyHtmlAction).
+  useEffect(() => {
+    if (!editor) return;
+    return attachSelectionToolbar({
+      doc: document,
+      buttons: tiptapToolbarButtons(editor),
+      isEligible: (sel) => {
+        if (!editor.isEditable) return false;
+        const n = sel.anchorNode;
+        return Boolean(n && editor.view.dom.contains(n));
+      },
+    });
+  }, [editor]);
+
   // Hint that only the left ~30 px (the arrow) is the toggle hot zone:
   // pointer there, text caret everywhere else on the summary.
   useEffect(() => {
@@ -475,11 +554,7 @@ function DetailsMenuItem({
 // Apply the chosen mode to a specific <details> node. Updates defaultState
 // (which is what gets serialized to data-default-state) and, for on/off,
 // flips the live open attribute too so the change is visible immediately.
-function applyDetailsMode(
-  editor: TiptapEditor,
-  detailsPos: number,
-  mode: DetailsDefaultState,
-) {
+function applyDetailsMode(editor: TiptapEditor, detailsPos: number, mode: DetailsDefaultState) {
   const node = editor.state.doc.nodeAt(detailsPos);
   if (!node || node.type.name !== "details") return;
   const tr = editor.state.tr.setNodeAttribute(detailsPos, "defaultState", mode);
@@ -488,16 +563,100 @@ function applyDetailsMode(
   editor.view.dispatch(tr);
 }
 
+// Selection-toolbar buttons for the Tiptap editor. Same lineup as the
+// designMode iframe's toolbar; actions reuse the sidebar's applyHtmlAction
+// dispatcher so behaviour stays in sync with the toolbar menu.
+function tiptapToolbarButtons(editor: TiptapEditor): ToolbarButton[] {
+  return [
+    {
+      label: "B",
+      title: "太字",
+      style: "font-weight: 700;",
+      action: () => applyHtmlAction(editor, "bold"),
+      isActive: () => editor.isActive("bold"),
+    },
+    {
+      label: "I",
+      title: "斜体",
+      style: "font-style: italic; font-family: Georgia, serif;",
+      action: () => applyHtmlAction(editor, "italic"),
+      isActive: () => editor.isActive("italic"),
+    },
+    {
+      label: "S",
+      title: "取り消し線",
+      style: "text-decoration: line-through;",
+      action: () => applyHtmlAction(editor, "strike"),
+      isActive: () => editor.isActive("strike"),
+    },
+    {
+      label: "<>",
+      title: "インラインコード",
+      style: "font-family: ui-monospace, monospace; font-size: 11px;",
+      action: () => applyHtmlAction(editor, "code"),
+      isActive: () => editor.isActive("code"),
+    },
+    { type: "separator" },
+    {
+      label: "H2",
+      title: "見出し2",
+      action: () => applyHtmlAction(editor, "h2"),
+      isActive: () => editor.isActive("heading", { level: 2 }),
+    },
+    {
+      label: "H3",
+      title: "見出し3",
+      action: () => applyHtmlAction(editor, "h3"),
+      isActive: () => editor.isActive("heading", { level: 3 }),
+    },
+    { type: "separator" },
+    {
+      label: "•",
+      title: "箇条書きリスト",
+      action: () => applyHtmlAction(editor, "list"),
+      isActive: () => editor.isActive("bulletList"),
+    },
+    {
+      label: "1.",
+      title: "番号付きリスト",
+      action: () => applyHtmlAction(editor, "numList"),
+      isActive: () => editor.isActive("orderedList"),
+    },
+    {
+      label: "❝",
+      title: "引用",
+      action: () => applyHtmlAction(editor, "quote"),
+      isActive: () => editor.isActive("blockquote"),
+    },
+    { type: "separator" },
+    {
+      label: "リンク",
+      title: "リンクを設定",
+      action: () => applyHtmlAction(editor, "link"),
+      isActive: () => editor.isActive("link"),
+    },
+    {
+      label: "解除",
+      title: "装飾を解除",
+      action: () => applyHtmlAction(editor, "unlink"),
+    },
+  ];
+}
+
 async function uploadAndInsert(view: EditorView, files: File[], at?: number) {
   for (const file of files) {
     const toastId = toast.loading(`Uploading ${file.name || "image"}...`);
     try {
-      const url = await uploadImage(file);
+      const [url, size] = await Promise.all([uploadImage(file), measureImageFile(file)]);
       const { schema } = view.state;
       const altText = stripImageExtension(file.name);
+      // Cap the initial display width; natural width wins for small images so
+      // icons aren't blown up. Resizable afterwards via the corner handle.
+      const width = size ? Math.min(size.width, DEFAULT_IMAGE_WIDTH) : DEFAULT_IMAGE_WIDTH;
       const imageNode = schema.nodes.image?.create({
         src: url,
         alt: altText || undefined,
+        width,
       });
       if (!imageNode) {
         toast.error("Image node type not registered", { id: toastId });
@@ -528,13 +687,4 @@ async function uploadAndInsert(view: EditorView, files: File[], at?: number) {
       toast.error(message, { id: toastId });
     }
   }
-}
-
-// Trim the last dotted extension off an image filename for use as alt text.
-// "diagram.png" → "diagram", "no-extension" → "no-extension".
-function stripImageExtension(name: string | undefined | null): string {
-  if (!name) return "";
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0) return name;
-  return name.slice(0, dot);
 }

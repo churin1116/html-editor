@@ -1,4 +1,12 @@
-import { Mark } from "@tiptap/core";
+import { Mark, markInputRule } from "@tiptap/core";
+
+// Markdown-style typing shortcuts, same regexes as Tiptap's stock Bold/
+// Italic (which these marks replace — replacing them dropped the stock
+// input rules, so they're re-declared here).
+const boldStarInput = /(?:^|\s)(\*\*(?!\s+\*\*)((?:[^*]+))\*\*(?!\s+\*\*))$/;
+const boldUnderscoreInput = /(?:^|\s)(__(?!\s+__)((?:[^_]+))__(?!\s+__))$/;
+const italicStarInput = /(?:^|\s)(\*(?!\s+\*)((?:[^*]+))\*(?!\s+\*))$/;
+const italicUnderscoreInput = /(?:^|\s)(_(?!\s+_)((?:[^_]+))_(?!\s+_))$/;
 
 // Replace StarterKit's Italic and Bold so the original tag identity
 // (<i> vs <em>, <b> vs <strong>) survives the round-trip. The default
@@ -39,6 +47,12 @@ export const Italic = Mark.create({
       "Mod-i": () => this.editor.commands.toggleMark(this.name),
     };
   },
+  addInputRules() {
+    return [
+      markInputRule({ find: italicStarInput, type: this.type }),
+      markInputRule({ find: italicUnderscoreInput, type: this.type }),
+    ];
+  },
 });
 
 export const Bold = Mark.create({
@@ -63,5 +77,11 @@ export const Bold = Mark.create({
     return {
       "Mod-b": () => this.editor.commands.toggleMark(this.name),
     };
+  },
+  addInputRules() {
+    return [
+      markInputRule({ find: boldStarInput, type: this.type }),
+      markInputRule({ find: boldUnderscoreInput, type: this.type }),
+    ];
   },
 });

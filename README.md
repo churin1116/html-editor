@@ -10,7 +10,10 @@ Built because viewing/editing personal Markdown notes from a code editor felt he
 - **Chameleon-compatible saved files** — Every saved `.html` follows the [Chameleon v1 theme contract](https://github.com/churin1116/html-chameleon), so a single theme switch (Chrome extension, `localStorage`, or `data-theme` attribute) repaints every file at once. The editor UI itself uses the same variables for visual parity.
 - **WYSIWYG editing** — TipTap 3.x with headings, lists, tables, links, code blocks, and more. Used for editor-created (`managed`) and fragment `.html` and for Markdown.
 - **Rendered editing for full documents** — Hand-authored full HTML (with `<!doctype>`/`<html>`/`<head>`/`<body>`, e.g. inline `<style>`, `<script>`, data-attributes, radio-driven tabs) is **not** flowed through TipTap (which would strip everything outside its schema). Instead it opens as its own rendered page in an editable iframe: you type straight onto the rendered content, and on save the original `<head>`/doctype/scripts are preserved verbatim while only the edited `<body>` is written back. Page scripts don't run in the edit view (so the serialized output stays free of script- or extension-injected nodes); CSS-only interactivity like tabs still works.
-- **Image uploads to Cloudflare R2** — Drag-and-drop or paste images into either editor; the file is uploaded to your R2 bucket and the public URL is inserted (as `<img>` in HTML, `![](url)` in Markdown). Optional — image uploads stay disabled until you configure R2 (see [Image uploads](#image-uploads)).
+- **Image uploads to Cloudflare R2** — Drag-and-drop or paste images into any editor mode (TipTap, full-document rendered view, Markdown); the file is uploaded to your R2 bucket and the public URL is inserted (as `<img>` in HTML, `![](url)` in Markdown). New images land at a readable default width (natural width, capped at 670 px). Optional — image uploads stay disabled until you configure R2 (see [Image uploads](#image-uploads)).
+- **Image resizing** — In the HTML editing modes, click an image to show a selection box and drag any corner handle (handles stay clamped inside the viewport, so oversized images remain resizable). The width is written as an inline style, so saved files render at the chosen size everywhere.
+- **Selection toolbar** — In both HTML editing modes, selecting text pops a floating toolbar (bold / italic / strike / inline code / H2 / H3 / lists / quote / link / clear formatting), so common formatting never requires the sidebar menu.
+- **Markdown typing shortcuts** — In both HTML editing modes, markdown markers convert to HTML as you type: `#`–`######` + space → headings, `-` / `1.` → lists, `>` → blockquote, `---` + Enter → horizontal rule, ` ``` ` + Enter → code block, and inline `**bold**` / `*italic*` / `` `code` `` / `~~strike~~`. (The Markdown editor is Markdown already.)
 - **Absolute paths via whitelist** — Edit files anywhere on disk. Allowed roots are managed from the sidebar (or directly in `config/allowed-roots.json`); arbitrary paths are rejected by the API. Supports `~/...` paths.
 - **External-edit conflict detection** — Captures `mtime` on open and rejects writes that would clobber concurrent changes (e.g., from VS Code or `git pull`).
 - **New file creation** — Sidebar `+ New` button creates an `.html` file under the chosen root.
@@ -207,7 +210,9 @@ Stored as plain Markdown. Round-trip uses [`marked`](https://marked.js.org/) for
 
 ## Image uploads
 
-Drag an image onto either editor (or paste from the clipboard) and it is uploaded to your own Cloudflare R2 bucket. The returned public URL is inserted into the document as `<img src="...">` (HTML) or `![](...)` (Markdown), so saved files reference the cloud copy and stay in sync across devices.
+Drag an image onto any editor mode (or paste from the clipboard) and it is uploaded to your own Cloudflare R2 bucket. The returned public URL is inserted into the document as `<img src="...">` (HTML) or `![](...)` (Markdown), so saved files reference the cloud copy and stay in sync across devices.
+
+Inserted images default to their natural width capped at 670 px (`width` inline style). In the HTML modes (TipTap and the full-document rendered view), click any image — including ones attached earlier — and drag a corner handle to resize; the new width persists into the saved file.
 
 This is the only cloud dependency in the app — it is fully optional. If you skip setup, the editor still works; pastes/drops of images will surface a toast saying `/api/upload-image` is not configured.
 
@@ -257,8 +262,10 @@ R2_PUBLIC_URL=https://pub-xxxxxxxxxxxx.r2.dev
 | `scripts/with-r2-secrets.sh` | Reads Keychain via `security find-generic-password`, exports env vars, execs the wrapped command. |
 | `src/app/api/upload-image/route.ts` | POST endpoint; validates MIME / 25 MB max; uploads to R2; returns the public URL. |
 | `src/lib/r2.ts` | S3 client + `uploadImageToR2(bytes, mime)` helper. Generates `images/YYYY/MM/{uuid}.{ext}` keys with a 1-year immutable `Cache-Control`. |
-| `src/lib/upload-image.ts` | Client-side fetch wrapper + DataTransfer → `File[]` helper, shared by both editors. |
-| `src/components/editor.tsx` | TipTap `handlePaste` / `handleDrop` → insert `image` node. |
+| `src/lib/upload-image.ts` | Client-side fetch wrapper, natural-size measurement, DataTransfer → `File[]` helper, shared by all editors. |
+| `src/lib/image-resize.ts` | Click-to-select corner-drag resizer overlay, shared by the TipTap editor and the full-document iframe. |
+| `src/components/editor.tsx` | TipTap `handlePaste` / `handleDrop` → insert `image` node (width attr backs the resizer). |
+| `src/components/html-source.tsx` | Full-document rendered view: `paste` / `drop` on the iframe document → insert styled `<img>` at the caret / drop point. |
 | `src/components/md-editor.tsx` | CodeMirror `domEventHandlers` → insert `![alt](url)` at the drop / caret position. |
 
 ### Allowed MIME types
