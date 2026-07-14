@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export type AllowedRoot = {
   label: string;
@@ -39,6 +40,15 @@ async function migrateLegacyIfPresent(): Promise<void> {
 
 export function expandPath(input: string): string {
   let p = input.trim();
+  // A pasted file:// URL (e.g. dragged from Finder/browser) → real path.
+  // fileURLToPath also decodes percent-encoding (%20 → space, etc.).
+  if (/^file:\/\//i.test(p)) {
+    try {
+      p = fileURLToPath(p);
+    } catch {
+      // Malformed URL — fall through and let path.resolve do its best.
+    }
+  }
   if (p === "~") return homedir();
   if (p.startsWith("~/")) p = path.join(homedir(), p.slice(2));
   return path.resolve(p);
