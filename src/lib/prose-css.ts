@@ -17,10 +17,15 @@ export const PROSE_CSS = `
 .prose-canvas h1,
 .prose-canvas h2,
 .prose-canvas h3,
-.prose-canvas h4 { line-height: 1.3; margin-top: 2em; }
+.prose-canvas h4,
+.prose-canvas h5,
+.prose-canvas h6 { line-height: 1.3; margin-top: 2em; font-weight: 600; }
 .prose-canvas h1 { font-size: 1.9rem; }
 .prose-canvas h2 { font-size: 1.5rem; }
 .prose-canvas h3 { font-size: 1.2rem; }
+.prose-canvas h4 { font-size: 1.05rem; }
+.prose-canvas h5 { font-size: 1rem; }
+.prose-canvas h6 { font-size: 0.9rem; }
 .prose-canvas p { margin: 1em 0; }
 /* 強調 (em / i) は斜体ではなく傍点 (・) で示す。和文に真の斜体は無く傾けると
    不自然なため、日本語前提で傍点を既定とする (gutenberg-translator の EPUB/PDF
@@ -62,8 +67,9 @@ export const PROSE_CSS = `
   color: var(--text-muted);
   margin: 1em 0;
 }
-.prose-canvas ul,
-.prose-canvas ol { padding-left: 1.5em; margin: 1em 0; }
+.prose-canvas ul { list-style: disc; padding-left: 1.5em; margin: 1em 0; }
+.prose-canvas ol { list-style: decimal; padding-left: 1.5em; margin: 1em 0; }
+.prose-canvas li { display: list-item; }
 .prose-canvas table { border-collapse: collapse; width: 100%; margin: 1em 0; }
 .prose-canvas th,
 .prose-canvas td { border: 1px solid var(--border); padding: 0.5em 0.75em; text-align: left; }
