@@ -6,9 +6,9 @@ Built because viewing/editing personal Markdown notes from a code editor felt he
 
 ## Features
 
-- **Hybrid HTML / Markdown** — `.html` files are edited directly and stay viewable via `file://` (Chameleon-themed; switch theme without re-saving). `.md` files are converted to HTML on read and back to Markdown on save, so existing `.md` notes keep their format and remain `git diff`-friendly.
+- **Hybrid HTML / Markdown** — `.html` files are edited directly and stay viewable via `file://` (Chameleon-themed; switch theme without re-saving). `.md` files are edited as raw Markdown with Obsidian-style Live Preview: real heading sizes, prose font, styled bold/quotes/code/links, and concealed markers — `#`/`**`/`>` are hidden, `-` becomes a bullet, `---` draws a rule, `[text](url)` collapses to the text — reappearing as raw source on the line/span under the cursor. The document itself is never rewritten — saves write your keystrokes verbatim, so `.md` notes stay `git diff`-friendly.
 - **Chameleon-compatible saved files** — Every saved `.html` follows the [Chameleon v1 theme contract](https://github.com/churin1116/html-chameleon), so a single theme switch (Chrome extension, `localStorage`, or `data-theme` attribute) repaints every file at once. The editor UI itself uses the same variables for visual parity.
-- **WYSIWYG editing** — TipTap 3.x with headings, lists, tables, links, code blocks, and more. Used for editor-created (`managed`) and fragment `.html` and for Markdown.
+- **WYSIWYG editing** — TipTap 3.x with headings, lists, tables, links, code blocks, and more. Used for editor-created (`managed`) and fragment `.html`. (`.md` files use the CodeMirror-based Markdown editor above instead.)
 - **Rendered editing for full documents** — Hand-authored full HTML (with `<!doctype>`/`<html>`/`<head>`/`<body>`, e.g. inline `<style>`, `<script>`, data-attributes, radio-driven tabs) is **not** flowed through TipTap (which would strip everything outside its schema). Instead it opens as its own rendered page in an editable iframe: you type straight onto the rendered content, and on save the original `<head>`/doctype/scripts are preserved verbatim while only the edited `<body>` is written back. Page scripts don't run in the edit view (so the serialized output stays free of script- or extension-injected nodes); CSS-only interactivity like tabs still works.
 - **Image uploads to Cloudflare R2** — Drag-and-drop or paste images into any editor mode (TipTap, full-document rendered view, Markdown); the file is uploaded to your R2 bucket and the public URL is inserted (as `<img>` in HTML, `![](url)` in Markdown). New images land at a readable default width (natural width, capped at 670 px). Optional — image uploads stay disabled until you configure R2 (see [Image uploads](#image-uploads)).
 - **Image resizing** — In the HTML editing modes, click an image to show a selection box and drag any corner handle (handles stay clamped inside the viewport, so oversized images remain resizable). The width is written as an inline style, so saved files render at the chosen size everywhere.
@@ -206,7 +206,13 @@ The `<meta name="chameleon">` tag carries the update policy and the exact baked 
 
 ### `.md` files
 
-Stored as plain Markdown. Round-trip uses [`marked`](https://marked.js.org/) for read and [`turndown`](https://github.com/mixmark-io/turndown) for write. GFM features (tables, strikethrough, fenced code) are preserved; richer in-editor formatting that has no Markdown equivalent may be simplified.
+Stored and edited as plain Markdown — there is no HTML conversion step, so saves are byte-faithful to what you typed. The editor (CodeMirror 6 with GFM parsing) styles the source in place as an Obsidian-style Live Preview, matching the Chameleon prose look of saved `.html` files:
+
+- Headings render at their real sizes (same scale as the saved-HTML prose CSS), `**bold**` is bold, `*emphasis*` shows as boten dots (matching the Japanese-prose convention in saved files), `~~strike~~` strikes through.
+- Blockquote lines get a left border, fenced code blocks a monospace surface, inline `` `code` `` a chip background.
+- GFM tables render as real tables (borders, header row, cell alignment, inline formatting inside cells) while the cursor is elsewhere; click a cell and the raw pipe source reappears — in monospace — with the cursor in that cell.
+- Markers are concealed while you read and reappear where you edit: `#`/`>`/`**`/`` ` ``/`~~` are hidden, `- ` becomes a `•` bullet, `- [ ]` a checkbox, `---` a drawn horizontal rule, and `[text](url)` collapses to just the underlined text. Put the cursor on the line (for line markers) or inside the span (for inline markers) and the raw source shows again. Ordered-list numbers, fenced-code ` ``` ` delimiters, and image syntax stay visible.
+- A leading YAML frontmatter block is shown as dimmed monospace instead of being misparsed as headings.
 
 ## Image uploads
 
@@ -298,9 +304,9 @@ This is a **local-only** tool. It is deliberately not safe to expose on a networ
 ## Architecture
 
 - **Framework**: Next.js 15 (App Router) + React 19
-- **Editor**: TipTap 3.x with StarterKit + Link/Image/Table extensions
+- **HTML editor**: TipTap 3.x with StarterKit + Link/Image/Table extensions
+- **Markdown editor**: CodeMirror 6 (`@codemirror/lang-markdown`, GFM) with Chameleon-styled live decorations
 - **Styling**: Tailwind CSS v4
-- **Markdown round-trip**: marked (MD → HTML) + turndown (HTML → MD)
 - **Lint/format**: Biome
 
 ```
@@ -313,11 +319,14 @@ src/
 │       └── file/route.ts     GET / PUT / POST file ops
 ├── components/
 │   ├── sidebar.tsx           Tree + "+ New" button
-│   └── editor.tsx            TipTap editor + toolbar
+│   ├── editor.tsx            TipTap editor + toolbar (HTML)
+│   └── md-editor.tsx         CodeMirror Markdown editor
 └── lib/
     ├── allowed-roots.ts      Config loader (cached)
     ├── fs-safe.ts            Path-traversal guard
-    ├── format.ts             MD ↔ HTML conversion
+    ├── format.ts             File-extension → format detection
+    ├── md-prose.ts           Markdown Live Preview (styling + marker concealment)
+    ├── prose-css.ts          Shared prose CSS (saved HTML + editors)
     └── html-template.ts      Self-contained HTML wrap/unwrap
 ```
 
@@ -326,7 +335,7 @@ src/
 - No bookmark / recent-files panel inside the app (browser bookmarks are the intended UX).
 - No full-text search.
 - New files can only be created at the root of an allowed directory; sub-directory creation is not yet wired up.
-- HTML → Markdown conversion is lossy for advanced TipTap features (cell coloring, custom node attributes) — round-trip on `.md` files focuses on common GFM constructs.
+- The Markdown Live Preview does not render images inline or hide fenced-code ` ``` ` delimiters; task-list checkboxes are display-only (click the line to edit `[ ]`/`[x]` as text).
 
 ## Contributing
 
