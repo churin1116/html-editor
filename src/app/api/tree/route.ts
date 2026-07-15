@@ -1,7 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { NextResponse } from "next/server";
 import { PathNotAllowedError, resolveSafePath } from "@/lib/fs-safe";
+import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 

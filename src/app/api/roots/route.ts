@@ -1,10 +1,6 @@
 import { stat } from "node:fs/promises";
+import { expandPath, loadAllowedRoots, saveAllowedRoots } from "@/lib/allowed-roots";
 import { NextResponse } from "next/server";
-import {
-  expandPath,
-  loadAllowedRoots,
-  saveAllowedRoots,
-} from "@/lib/allowed-roots";
 
 export const dynamic = "force-dynamic";
 
@@ -37,16 +33,10 @@ export async function POST(req: Request) {
   } catch (err: unknown) {
     const e = err as NodeJS.ErrnoException;
     if (e.code === "ENOENT") {
-      return NextResponse.json(
-        { error: "Path does not exist", path: absolute },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "Path does not exist", path: absolute }, { status: 400 });
     }
     if (e.code === "EACCES") {
-      return NextResponse.json(
-        { error: "Permission denied", path: absolute },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "Permission denied", path: absolute }, { status: 400 });
     }
     return NextResponse.json({ error: e.message ?? "Unknown error" }, { status: 500 });
   }

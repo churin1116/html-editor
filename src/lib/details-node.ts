@@ -77,7 +77,11 @@ export const Summary = Node.create({
         if ($from.parent.type.name !== this.name) return false;
         const afterSummary = $from.after();
         if (afterSummary >= state.doc.content.size) return false;
-        return this.editor.chain().setTextSelection(afterSummary + 1).focus().run();
+        return this.editor
+          .chain()
+          .setTextSelection(afterSummary + 1)
+          .focus()
+          .run();
       },
     };
   },

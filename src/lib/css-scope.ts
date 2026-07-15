@@ -101,7 +101,11 @@ function walk(css: string, scope: string): string {
     const body = css.slice(bodyStart, bodyEnd);
 
     if (prelude.startsWith("@")) {
-      const name = prelude.slice(1).match(/^[\w-]+/i)?.[0]?.toLowerCase() ?? "";
+      const name =
+        prelude
+          .slice(1)
+          .match(/^[\w-]+/i)?.[0]
+          ?.toLowerCase() ?? "";
       if (NESTED_AT_RULES.has(name)) {
         out += `${prelude} {${walk(body, scope)}}`;
       } else if (SELF_AT_RULES.has(name)) {

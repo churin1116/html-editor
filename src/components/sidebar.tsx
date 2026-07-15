@@ -232,6 +232,7 @@ export function Sidebar({
     }
   }, []);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey is the parent's explicit "reload now" trigger
   useEffect(() => {
     for (const root of roots) reloadTree(root.path);
   }, [roots, reloadTree, refreshKey]);
@@ -946,6 +947,7 @@ function ActionIconSvg({ icon }: { icon: ActionIcon }) {
         strokeWidth="1.4"
         strokeLinecap="round"
         strokeLinejoin="round"
+        aria-hidden="true"
       >
         <rect x="2.2" y="3.6" width="11.6" height="8.8" rx="0.8" />
         <path d="M2.2 7h11.6M2.2 10h11.6M6 3.6v8.8M10 3.6v8.8" />
@@ -1045,6 +1047,7 @@ function AddRootForm({
         onChange={(e) => setLabel(e.target.value)}
         placeholder="Label"
         className="input-line mb-3"
+        // biome-ignore lint/a11y/noAutofocus: form appears on user action; focusing its first field is expected
         autoFocus
       />
       <input
@@ -1107,6 +1110,7 @@ function PlusIcon() {
       stroke="currentColor"
       strokeWidth="1.6"
       strokeLinecap="round"
+      aria-hidden="true"
     >
       <path d="M8 3.5v9M3.5 8h9" />
     </svg>
@@ -1123,6 +1127,7 @@ function CloseIcon() {
       stroke="currentColor"
       strokeWidth="1.6"
       strokeLinecap="round"
+      aria-hidden="true"
     >
       <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" />
     </svg>
@@ -1175,7 +1180,7 @@ function FolderIcon({ open }: { open: boolean }) {
 
 function ChevronIcon() {
   return (
-    <svg viewBox="0 0 10 10" className="tree-dir-chevron-svg">
+    <svg viewBox="0 0 10 10" className="tree-dir-chevron-svg" aria-hidden="true">
       <path
         d="M3.5 2L7 5L3.5 8"
         fill="none"
@@ -1320,6 +1325,7 @@ function HtmlIcon() {
       strokeWidth="1.5"
       strokeLinecap="round"
       strokeLinejoin="round"
+      aria-hidden="true"
     >
       <path d="M5 4.5L1.8 8l3.2 3.5" />
       <path d="M11 4.5l3.2 3.5-3.2 3.5" />
@@ -1339,6 +1345,7 @@ function MdIcon() {
       strokeWidth="1.3"
       strokeLinecap="round"
       strokeLinejoin="round"
+      aria-hidden="true"
     >
       <rect x="1.4" y="3.6" width="13.2" height="8.8" rx="1.2" />
       <path d="M3.5 10.2V6.2l1.5 2 1.5-2v4" />
@@ -1625,7 +1632,7 @@ function ShortcutItem({
   const isDragging = dnd.source?.kind === "file" && dnd.source.path === file.path;
   const isEditing = rename.editingPath === file.path;
   const titleParts = [
-    missing ? `ファイルが見つかりません` : null,
+    missing ? "ファイルが見つかりません" : null,
     file.alias ? `元ファイル: ${filename}` : null,
     file.path,
   ].filter(Boolean);
@@ -1782,6 +1789,7 @@ function AddFolderForm({
         spellCheck={false}
         autoCapitalize="off"
         autoComplete="off"
+        // biome-ignore lint/a11y/noAutofocus: form appears on user action; focusing its first field is expected
         autoFocus
         className="input-line mb-3"
         style={{ fontSize: "12px" }}
@@ -1841,6 +1849,7 @@ function AddShortcutForm({
         spellCheck={false}
         autoCapitalize="off"
         autoComplete="off"
+        // biome-ignore lint/a11y/noAutofocus: form appears on user action; focusing its first field is expected
         autoFocus
         className="input-line font-mono mb-3"
         style={{ fontSize: "12px" }}
@@ -1917,6 +1926,7 @@ function ContextMenu({
   const top = Math.min(y, window.innerHeight - MENU_H - 8);
 
   return (
+    // biome-ignore lint/a11y/useKeyWithClickEvents: onClick only stops propagation; menu items are real buttons
     <div
       role="menu"
       className="fixed z-50 min-w-[190px] py-1 rounded-md fade-in"
@@ -2022,6 +2032,7 @@ function FolderContextMenu({
   const top = Math.min(y, window.innerHeight - MENU_H - 8);
 
   return (
+    // biome-ignore lint/a11y/useKeyWithClickEvents: onClick only stops propagation; menu items are real buttons
     <div
       role="menu"
       className="fixed z-50 min-w-[220px] py-1 rounded-md fade-in"

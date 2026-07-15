@@ -264,7 +264,7 @@ export function setFolderCssInTree(
         return { ...n, children: walk(n.children) };
       }
       ok = true;
-      if (cssPath && cssPath.trim()) {
+      if (cssPath?.trim()) {
         return { ...n, cssPath: path.resolve(cssPath.trim()) };
       }
       const { cssPath: _drop, ...rest } = n;
@@ -284,7 +284,7 @@ export function setFileAliasInTree(
       if (n.type === "file") {
         if (n.path !== absolute) return n;
         ok = true;
-        if (alias && alias.trim()) {
+        if (alias?.trim()) {
           return { ...n, alias: alias.trim() };
         }
         const { alias: _drop, ...rest } = n;

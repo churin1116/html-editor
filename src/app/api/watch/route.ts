@@ -1,6 +1,6 @@
+import { loadAllowedRoots } from "@/lib/allowed-roots";
 import chokidar from "chokidar";
 import type { NextRequest } from "next/server";
-import { loadAllowedRoots } from "@/lib/allowed-roots";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
       };
 
       // initial comment to flush headers
-      controller.enqueue(encoder.encode(`: connected\n\n`));
+      controller.enqueue(encoder.encode(": connected\n\n"));
 
       if (rootPaths.length === 0) {
         send({ event: "ready" });
@@ -57,16 +57,14 @@ export async function GET(req: NextRequest) {
       watcher.on("add", (p) => send({ event: "add", path: p, root: findRoot(p) }));
       watcher.on("unlink", (p) => send({ event: "unlink", path: p, root: findRoot(p) }));
       watcher.on("addDir", (p) => send({ event: "addDir", path: p, root: findRoot(p) }));
-      watcher.on("unlinkDir", (p) =>
-        send({ event: "unlinkDir", path: p, root: findRoot(p) }),
-      );
+      watcher.on("unlinkDir", (p) => send({ event: "unlinkDir", path: p, root: findRoot(p) }));
       watcher.on("ready", () => send({ event: "ready" }));
 
       // heartbeat every 25s to keep connection alive through proxies
       const heartbeat = setInterval(() => {
         if (closed) return;
         try {
-          controller.enqueue(encoder.encode(`: ping\n\n`));
+          controller.enqueue(encoder.encode(": ping\n\n"));
         } catch {
           /* closed */
         }
