@@ -646,7 +646,9 @@ export function Sidebar({
                       selectedPath={selectedPath}
                       onSelect={onSelect}
                       onContextMenu={openContextMenu}
-                      depth={0}
+                      // The root header row itself sits at depth 0 (its chevron
+                      // is at px-2), so the root's entries start one level in.
+                      depth={1}
                     />
                   ))}
               </div>
