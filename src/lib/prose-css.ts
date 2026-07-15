@@ -5,12 +5,20 @@
 //
 // Scoped to .prose-canvas. The standalone HTML adds that class to <article>;
 // the editor adds it to the TipTap editable container.
+// Shared with the Markdown editor (md-prose.ts / md-editor.tsx) so raw .md
+// editing shows the same typography as saved Chameleon HTML.
+export const PROSE_FONT = `-apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif`;
+export const PROSE_MONO_FONT = `ui-monospace, "SF Mono", Menlo, monospace`;
+// h1..h6 — single source for .prose-canvas below and the Markdown editor's
+// heading line classes.
+export const PROSE_HEADING_SIZES = ["1.9rem", "1.5rem", "1.2rem", "1.05rem", "1rem", "0.9rem"];
+
 export const PROSE_CSS = `
 .prose-canvas {
   max-width: 760px;
   margin: 4rem auto;
   padding: 0 1.5rem;
-  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
+  font-family: ${PROSE_FONT};
   line-height: 1.8;
   color: var(--text);
 }
@@ -20,12 +28,7 @@ export const PROSE_CSS = `
 .prose-canvas h4,
 .prose-canvas h5,
 .prose-canvas h6 { line-height: 1.3; margin-top: 2em; font-weight: 600; }
-.prose-canvas h1 { font-size: 1.9rem; }
-.prose-canvas h2 { font-size: 1.5rem; }
-.prose-canvas h3 { font-size: 1.2rem; }
-.prose-canvas h4 { font-size: 1.05rem; }
-.prose-canvas h5 { font-size: 1rem; }
-.prose-canvas h6 { font-size: 0.9rem; }
+${PROSE_HEADING_SIZES.map((size, i) => `.prose-canvas h${i + 1} { font-size: ${size}; }`).join("\n")}
 .prose-canvas p { margin: 1em 0; }
 /* 強調 (em / i) は斜体ではなく傍点 (・) で示す。和文に真の斜体は無く傾けると
    不自然なため、日本語前提で傍点を既定とする (gutenberg-translator の EPUB/PDF
@@ -51,10 +54,10 @@ export const PROSE_CSS = `
   overflow-x: auto;
   font-size: 0.9em;
   line-height: 1.6;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-family: ${PROSE_MONO_FONT};
 }
 .prose-canvas code {
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-family: ${PROSE_MONO_FONT};
   background: var(--surface-2);
   padding: 0.15em 0.35em;
   border-radius: 3px;

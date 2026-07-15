@@ -1,8 +1,10 @@
 "use client";
 
+import { mdProse } from "@/lib/md-prose";
+import { PROSE_FONT } from "@/lib/prose-css";
 import { loadScroll, saveScroll } from "@/lib/scroll-memory";
 import { extractImageFilesFromDataTransfer, uploadImage } from "@/lib/upload-image";
-import { markdown } from "@codemirror/lang-markdown";
+import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { EditorView } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from "react";
@@ -77,7 +79,10 @@ export function MdEditor({
 
   const extensions = useMemo(
     () => [
-      markdown(),
+      // markdownLanguage = GFM (tables, strikethrough, task lists) — the
+      // default base is CommonMark only.
+      markdown({ base: markdownLanguage }),
+      mdProse,
       EditorView.lineWrapping,
       EditorView.domEventHandlers({
         paste: (event, view) => {
@@ -102,18 +107,23 @@ export function MdEditor({
             height: "100%",
             backgroundColor: "var(--canvas)",
             color: "var(--text)",
-            fontSize: "14px",
+            // 16px so the rem-based heading sizes shared with prose-css.ts
+            // land at the same visual size as the saved HTML.
+            fontSize: "16px",
           },
+          // Same measure and typography as .prose-canvas (prose-css.ts) so
+          // editing .md reads like the rendered Chameleon page. The measure
+          // lives on .cm-content (not .cm-scroller) so the scroller stays
+          // full-width and its scrollbar sits at the window edge.
           ".cm-scroller": {
-            fontFamily:
-              'ui-monospace, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace',
-            lineHeight: "1.7",
-            padding: "2.5rem 5rem 6rem",
-            maxWidth: "820px",
-            margin: "0 auto",
+            fontFamily: PROSE_FONT,
+            lineHeight: "1.8",
           },
           ".cm-content": {
             caretColor: "var(--primary)",
+            maxWidth: "760px",
+            margin: "0 auto",
+            padding: "2.5rem 1.5rem 6rem",
           },
           ".cm-cursor, .cm-dropCursor": {
             borderLeftColor: "var(--primary)",
@@ -131,26 +141,6 @@ export function MdEditor({
           ".cm-gutters": { display: "none" },
           ".cm-activeLine": { backgroundColor: "transparent" },
           ".cm-activeLineGutter": { backgroundColor: "transparent" },
-          /* Markdown syntax-aware tokens */
-          ".tok-heading1, .tok-heading2, .tok-heading3, .tok-heading4, .tok-heading5, .tok-heading6":
-            {
-              fontWeight: "600",
-              color: "var(--text)",
-            },
-          ".tok-strong": { fontWeight: "700", color: "var(--text)" },
-          ".tok-emphasis": { fontStyle: "italic", color: "var(--text)" },
-          ".tok-link, .tok-url": { color: "var(--primary)" },
-          ".tok-monospace, .tok-code": {
-            color: "var(--text)",
-            backgroundColor: "var(--surface-2)",
-            padding: "0.05em 0.3em",
-            borderRadius: "3px",
-          },
-          ".tok-quote": { color: "var(--text-muted)", fontStyle: "italic" },
-          ".tok-meta, .tok-processingInstruction, .tok-punctuation": {
-            color: "var(--text-subtle)",
-          },
-          ".tok-list": { color: "var(--text-muted)" },
         },
         { dark: false },
       ),
@@ -164,6 +154,10 @@ export function MdEditor({
         value={content}
         onChange={onChange}
         extensions={extensions}
+        // The wrapper div react-codemirror renders has no height of its own;
+        // without h-full the editor's height:100% resolves to auto and the
+        // scroller grows to full content height (scrolling dies).
+        className="h-full"
         height="100%"
         basicSetup={{
           lineNumbers: false,
