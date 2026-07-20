@@ -1,6 +1,8 @@
+import { promptDialog } from "@/lib/dialogs";
 import { redo, undo } from "@codemirror/commands";
 import type { EditorView } from "@codemirror/view";
 import type { Editor as TiptapEditor } from "@tiptap/react";
+import { toast } from "sonner";
 
 export type ActionId =
   | "h1"
@@ -233,13 +235,17 @@ export function applyMdAction(view: EditorView, id: ActionId) {
 // selected text becomes the ruby base, the prompt result becomes the rt
 // annotation. Empty selection no-ops so the user doesn't end up with
 // dangling placeholder text inside a ruby node they'll have to clean up.
-function insertRuby(editor: TiptapEditor) {
+async function insertRuby(editor: TiptapEditor) {
   const sel = editor.state.selection;
   if (sel.empty) {
-    window.alert("ルビを付けたいテキストを選択してから操作してください。");
+    toast.error("ルビを付けたいテキストを選択してから操作してください。");
     return;
   }
-  const ruby = window.prompt("ルビ（rt の中身）");
+  const ruby = await promptDialog({
+    title: "ルビ",
+    placeholder: "rt の中身",
+    confirmLabel: "挿入",
+  });
   if (!ruby) return;
   const base = editor.state.doc.textBetween(sel.from, sel.to);
   editor
@@ -258,15 +264,26 @@ function insertRuby(editor: TiptapEditor) {
 
 // Wrap selected text in <abbr title="...">. Title is the expansion; without
 // it the <abbr> is semantically useless, so an empty title cancels.
-function insertAbbr(editor: TiptapEditor) {
+async function insertAbbr(editor: TiptapEditor) {
   const sel = editor.state.selection;
   if (sel.empty) {
-    window.alert("略語にしたいテキストを選択してから操作してください。");
+    toast.error("略語にしたいテキストを選択してから操作してください。");
     return;
   }
-  const title = window.prompt("略語の説明（title 属性）");
+  const title = await promptDialog({
+    title: "略語の説明",
+    placeholder: "title 属性",
+    confirmLabel: "設定",
+  });
   if (!title) return;
   editor.chain().focus().setMark("abbr", { title }).run();
+}
+
+// Prompt for a URL and set a link on the current selection. Uses a fresh chain
+// created after the prompt resolves (the outer chain is stale by then).
+async function insertLink(editor: TiptapEditor) {
+  const url = await promptDialog({ title: "リンク", placeholder: "URL", confirmLabel: "設定" });
+  if (url) editor.chain().focus().setLink({ href: url }).run();
 }
 
 // Insert an empty <dl><dt>用語</dt><dd><p>説明</p></dd></dl> structure so
@@ -328,11 +345,9 @@ export function applyHtmlAction(editor: TiptapEditor, id: ActionId) {
     case "codeBlock":
       chain.toggleCodeBlock().run();
       break;
-    case "link": {
-      const url = window.prompt("URL");
-      if (url) chain.setLink({ href: url }).run();
+    case "link":
+      void insertLink(editor);
       break;
-    }
     // Generic "remove all inline marks at cursor". Subsumes the old
     // "unlink" behaviour: anything wrapped around the current selection
     // (link, italic, bold, sup, sub, mark, cite, small, ins, del, u, abbr,
@@ -381,10 +396,10 @@ export function applyHtmlAction(editor: TiptapEditor, id: ActionId) {
       chain.toggleMark("highlight").run();
       break;
     case "abbr":
-      insertAbbr(editor);
+      void insertAbbr(editor);
       break;
     case "ruby":
-      insertRuby(editor);
+      void insertRuby(editor);
       break;
     case "dl":
       insertDescriptionList(editor);

@@ -1,4 +1,5 @@
 import "./globals.css";
+import { DialogProvider } from "@/components/dialog-provider";
 import { resolveTheme } from "@/lib/chameleon-live";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
@@ -24,7 +25,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: theme.js }} />
       </head>
       <body className="bg-canvas">
-        {children}
+        <DialogProvider>{children}</DialogProvider>
         <Toaster position="bottom-right" richColors />
       </body>
     </html>
