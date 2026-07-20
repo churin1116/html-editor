@@ -1,5 +1,6 @@
 "use client";
 
+import { confirmDialog, promptDialog } from "@/lib/dialogs";
 import { ACTIONS, type ActionIcon, type ActionId, type EditorMode } from "@/lib/editor-actions";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -24,6 +25,7 @@ type MoveSource = { kind: "file"; path: string } | { kind: "folder"; id: string 
 type DropTargetId = string | "root";
 
 const DRAG_MIME = "application/x-shortcut-move";
+const COLLAPSE_STORAGE_KEY = "sidebar.collapse.v1";
 
 function findFolderById(nodes: ShortcutNode[], id: string): ShortcutFolderNode | null {
   for (const n of nodes) {
@@ -33,6 +35,16 @@ function findFolderById(nodes: ShortcutNode[], id: string): ShortcutFolderNode |
     if (r) return r;
   }
   return null;
+}
+
+// Collect every file path within a subtree (used to decide whether the open
+// file lives inside a folder that's being removed).
+function collectFilePaths(nodes: ShortcutNode[], acc: string[] = []): string[] {
+  for (const n of nodes) {
+    if (n.type === "file") acc.push(n.path);
+    else collectFilePaths(n.children, acc);
+  }
+  return acc;
 }
 
 function isInvalidDrop(
@@ -101,7 +113,7 @@ export function Sidebar({
   onFolderCssChanged,
 }: {
   selectedPath: string | null;
-  onSelect: (path: string) => void;
+  onSelect: (path: string | null) => void;
   refreshKey: number;
   onCreated: (path: string) => void;
   mode: EditorMode | null;
@@ -125,6 +137,48 @@ export function Sidebar({
   const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
   const [dragOverTarget, setDragOverTarget] = useState<DropTargetId | null>(null);
   const [dragSource, setDragSource] = useState<MoveSource | null>(null);
+
+  // Persist the tree open/collapse state across reloads. Kept in localStorage
+  // (not a cookie) since it's a potentially large per-folder map and never
+  // needs to be sent to the server. `hydrated` gates the save effect so the
+  // default (all-open) state isn't written back over the stored value before
+  // the restore below runs.
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(COLLAPSE_STORAGE_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw) as {
+          roots?: Record<string, boolean>;
+          folders?: Record<string, boolean>;
+          shortcuts?: boolean;
+        };
+        if (saved.roots) setCollapsedRoots(saved.roots);
+        if (saved.folders) setCollapsedFolders(saved.folders);
+        if (typeof saved.shortcuts === "boolean") setShortcutsCollapsed(saved.shortcuts);
+      }
+    } catch {
+      // Corrupt or unavailable storage — fall back to the default open state.
+    }
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      localStorage.setItem(
+        COLLAPSE_STORAGE_KEY,
+        JSON.stringify({
+          roots: collapsedRoots,
+          folders: collapsedFolders,
+          shortcuts: shortcutsCollapsed,
+        }),
+      );
+    } catch {
+      // Storage full or blocked — persistence is best-effort.
+    }
+  }, [hydrated, collapsedRoots, collapsedFolders, shortcutsCollapsed]);
 
   const toggleFolder = useCallback((folderId: string) => {
     setCollapsedFolders((prev) => ({ ...prev, [folderId]: !prev[folderId] }));
@@ -278,7 +332,11 @@ export function Sidebar({
 
   const handleNewFile = useCallback(
     async (rootPath: string) => {
-      const name = window.prompt("New HTML file name");
+      const name = await promptDialog({
+        title: "新規 HTML ファイル",
+        placeholder: "ファイル名",
+        confirmLabel: "作成",
+      });
       if (!name) return;
       const res = await fetch("/api/file", {
         method: "POST",
@@ -287,7 +345,7 @@ export function Sidebar({
       });
       const data = await res.json();
       if (!res.ok) {
-        window.alert(`Failed: ${data.error}`);
+        toast.error(data.error ?? "作成に失敗しました");
         return;
       }
       await reloadTree(rootPath);
@@ -341,38 +399,57 @@ export function Sidebar({
     return null;
   }, []);
 
-  const handleRemoveShortcut = useCallback(async (shortcutPath: string) => {
-    const ok = window.confirm("Remove this shortcut?\nThe file on disk is not deleted.");
-    if (!ok) return;
-    const res = await fetch(`/api/shortcuts?path=${encodeURIComponent(shortcutPath)}`, {
-      method: "DELETE",
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      window.alert(`Failed: ${data.error}`);
-      return;
-    }
-    setShortcutTree(data.shortcuts ?? []);
-  }, []);
+  const handleRemoveShortcut = useCallback(
+    async (shortcutPath: string) => {
+      const ok = await confirmDialog({
+        title: "ショートカットを削除",
+        description: "ディスク上のファイルは削除されません。",
+        confirmLabel: "削除",
+        destructive: true,
+      });
+      if (!ok) return;
+      const res = await fetch(`/api/shortcuts?path=${encodeURIComponent(shortcutPath)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error ?? "削除に失敗しました");
+        return;
+      }
+      setShortcutTree(data.shortcuts ?? []);
+      // If the removed shortcut is what the main content is showing, clear it.
+      if (selectedPath === shortcutPath) onSelect(null);
+    },
+    [selectedPath, onSelect],
+  );
 
   const handleRemoveFolder = useCallback(
     async (folderId: string, folderName: string, hasChildren: boolean) => {
-      const msg = hasChildren
-        ? `Remove folder "${folderName}" and all shortcuts inside?\nFiles on disk are not deleted.`
-        : `Remove folder "${folderName}"?`;
-      const ok = window.confirm(msg);
+      const ok = await confirmDialog({
+        title: `フォルダ「${folderName}」を削除`,
+        description: hasChildren
+          ? "中のショートカットもすべて削除されます。ディスク上のファイルは削除されません。"
+          : undefined,
+        confirmLabel: "削除",
+        destructive: true,
+      });
       if (!ok) return;
+      // Capture the folder's file paths before it's gone from the tree.
+      const removedFolder = findFolderById(shortcutTree, folderId);
+      const removedPaths = removedFolder ? collectFilePaths(removedFolder.children) : [];
       const res = await fetch(`/api/shortcuts?folderId=${encodeURIComponent(folderId)}`, {
         method: "DELETE",
       });
       const data = await res.json();
       if (!res.ok) {
-        window.alert(`Failed: ${data.error}`);
+        toast.error(data.error ?? "削除に失敗しました");
         return;
       }
       setShortcutTree(data.shortcuts ?? []);
+      // If the main content shows a file inside the removed folder, clear it.
+      if (selectedPath && removedPaths.includes(selectedPath)) onSelect(null);
     },
-    [],
+    [shortcutTree, selectedPath, onSelect],
   );
 
   const openAddForm = useCallback((parentId: string | null, kind: "file" | "folder") => {
@@ -465,27 +542,38 @@ export function Sidebar({
     },
   };
 
-  const handleRemoveRoot = useCallback(async (rootPath: string, label: string) => {
-    const ok = window.confirm(`Remove "${label}"?\nFiles on disk are not deleted.`);
-    if (!ok) return;
-    const res = await fetch(`/api/roots?path=${encodeURIComponent(rootPath)}`, {
-      method: "DELETE",
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      window.alert(`Failed: ${data.error}`);
-      return;
-    }
-    setRoots(data.roots ?? []);
-    setTrees((prev) => {
-      const { [rootPath]: _, ...rest } = prev;
-      return rest;
-    });
-    setRootErrors((prev) => {
-      const { [rootPath]: _, ...rest } = prev;
-      return rest;
-    });
-  }, []);
+  const handleRemoveRoot = useCallback(
+    async (rootPath: string, label: string) => {
+      const ok = await confirmDialog({
+        title: `「${label}」を一覧から削除`,
+        description: "ディスク上のファイルは削除されません。",
+        confirmLabel: "削除",
+        destructive: true,
+      });
+      if (!ok) return;
+      const res = await fetch(`/api/roots?path=${encodeURIComponent(rootPath)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error ?? "削除に失敗しました");
+        return;
+      }
+      setRoots(data.roots ?? []);
+      setTrees((prev) => {
+        const { [rootPath]: _, ...rest } = prev;
+        return rest;
+      });
+      setRootErrors((prev) => {
+        const { [rootPath]: _, ...rest } = prev;
+        return rest;
+      });
+      // If the main content shows a file under the removed root, clear it.
+      if (selectedPath && (selectedPath === rootPath || selectedPath.startsWith(`${rootPath}/`)))
+        onSelect(null);
+    },
+    [selectedPath, onSelect],
+  );
 
   if (error) return <div className="p-5 text-sm text-[var(--danger)]">{error}</div>;
 
@@ -2012,12 +2100,14 @@ function FolderContextMenu({
     };
   }, [onClose]);
 
-  const handleSet = () => {
-    const initial = cssPath ?? "";
-    const input = window.prompt(
-      `プレビュー CSS のパス（絶対パス）。「${folderName}」配下のファイルを開いたときにスコープ付きで適用されます。空欄で解除。`,
-      initial,
-    );
+  const handleSet = async () => {
+    const input = await promptDialog({
+      title: "プレビュー CSS のパス",
+      description: `絶対パスを指定。「${folderName}」配下のファイルを開いたときにスコープ付きで適用されます。空欄で解除。`,
+      defaultValue: cssPath ?? "",
+      placeholder: "/path/to/style.css",
+      confirmLabel: "設定",
+    });
     if (input === null) {
       onClose();
       return;

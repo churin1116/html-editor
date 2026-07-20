@@ -129,7 +129,17 @@ export function EditorShell({
   }, []);
 
   useEffect(() => {
-    if (selected && file?.path !== selected) loadFile(selected);
+    // Selection cleared (e.g. the open file's shortcut/folder/root was removed
+    // from the sidebar): drop the main content back to the empty state.
+    if (!selected) {
+      if (file) {
+        setFile(null);
+        setDraft("");
+        setDirty(false);
+      }
+      return;
+    }
+    if (file?.path !== selected) loadFile(selected);
   }, [selected, file, loadFile]);
 
   // Refresh just the previewCss of the open file (no content/draft touch) so
