@@ -4,7 +4,8 @@ import { ConflictDialog, type ConflictResolution } from "@/components/conflict-d
 import { Editor } from "@/components/editor";
 import { HtmlSource } from "@/components/html-source";
 import { MdEditor } from "@/components/md-editor";
-import { Sidebar } from "@/components/sidebar";
+import { Sidebar, type SidebarCollapse } from "@/components/sidebar";
+import type { AllowedRoot } from "@/lib/allowed-roots";
 import {
   type ActionId,
   type EditorMode,
@@ -12,6 +13,8 @@ import {
   applyMdAction,
 } from "@/lib/editor-actions";
 import { PROSE_CSS } from "@/lib/prose-css";
+import type { ShortcutNodeWithStatus } from "@/lib/shortcuts";
+import type { TreeEntry } from "@/lib/tree";
 import type { EditorView } from "@codemirror/view";
 import type { Editor as TiptapEditor } from "@tiptap/react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -39,10 +42,22 @@ export function EditorShell({
   initialSelected,
   initialFile,
   initialSidebarOpen = true,
+  initialRoots,
+  initialTrees,
+  initialRootErrors,
+  initialShortcuts,
+  initialWorkspace,
+  initialCollapse,
 }: {
   initialSelected: string | null;
   initialFile: LoadedFile | null;
   initialSidebarOpen?: boolean;
+  initialRoots: AllowedRoot[];
+  initialTrees: Record<string, TreeEntry[]>;
+  initialRootErrors: Record<string, string>;
+  initialShortcuts: ShortcutNodeWithStatus[];
+  initialWorkspace: string | null;
+  initialCollapse: SidebarCollapse;
 }) {
   const [selected, setSelected] = useState<string | null>(initialSelected);
   const [file, setFile] = useState<LoadedFile | null>(initialFile);
@@ -320,6 +335,12 @@ export function EditorShell({
             mode={toolbarMode}
             onApply={applyAction}
             onFolderCssChanged={refreshPreviewCss}
+            initialRoots={initialRoots}
+            initialTrees={initialTrees}
+            initialRootErrors={initialRootErrors}
+            initialShortcuts={initialShortcuts}
+            initialWorkspace={initialWorkspace}
+            initialCollapse={initialCollapse}
           />
         </div>
       </aside>

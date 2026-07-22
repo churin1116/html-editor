@@ -17,6 +17,8 @@ Built because viewing/editing personal Markdown notes from a code editor felt he
 - **Absolute paths via whitelist** — Edit files anywhere on disk. Allowed roots are managed from the sidebar (or directly in `config/allowed-roots.json`); arbitrary paths are rejected by the API. Supports `~/...` paths.
 - **External-edit conflict detection** — Captures `mtime` on open and rejects writes that would clobber concurrent changes (e.g., from VS Code or `git pull`).
 - **New file creation** — Sidebar `+ New` button creates an `.html` file under the chosen root.
+- **Workspaces** — When two or more roots are registered, a switcher at the top of the sidebar scopes the tree to a single root (VS Code-style project view) or shows all. The choice persists across reloads, and `?ws=<path-or-label>` in the URL pins a workspace per tab/bookmark.
+- **Sidebar state persistence** — The active workspace and every fold (roots, tree directories, shortcut folders) are stored in cookies, and the sidebar — roots, trees, shortcuts — is rendered server-side, so the first paint already shows the exact last state with no flash or refetch. Newly added roots start with all folders collapsed; folders you open stay open across reloads.
 
 ## Quick start
 

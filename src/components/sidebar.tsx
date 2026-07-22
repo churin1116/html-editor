@@ -2,7 +2,7 @@
 
 import { confirmDialog, promptDialog } from "@/lib/dialogs";
 import { ACTIONS, type ActionIcon, type ActionId, type EditorMode } from "@/lib/editor-actions";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 type AllowedRoot = { label: string; path: string };
@@ -25,7 +25,80 @@ type MoveSource = { kind: "file"; path: string } | { kind: "folder"; id: string 
 type DropTargetId = string | "root";
 
 const DRAG_MIME = "application/x-shortcut-move";
+// Legacy keys — sidebar UI state now lives in cookies so the server can
+// render the correct state on first paint. Old localStorage values migrate
+// on mount.
 const COLLAPSE_STORAGE_KEY = "sidebar.collapse.v1";
+const WORKSPACE_STORAGE_KEY = "sidebar.workspace.v1";
+const WORKSPACE_COOKIE = "workspace";
+const COLLAPSE_COOKIE = "sidebarCollapse";
+const COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
+
+function writeWorkspaceCookie(value: string | null) {
+  document.cookie = value
+    ? `${WORKSPACE_COOKIE}=${encodeURIComponent(value)}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`
+    : `${WORKSPACE_COOKIE}=; path=/; max-age=0; SameSite=Lax`;
+}
+
+// Everything the sidebar keeps collapsed, hydrated server-side from the
+// `sidebarCollapse` cookie so the first paint already shows the right state.
+export type SidebarCollapse = {
+  roots: Record<string, boolean>;
+  folders: Record<string, boolean>;
+  // Directories inside a root's file tree, keyed by absolute path. An entry
+  // is an explicit user choice (true = closed, false = open); directories
+  // without one fall back to their root's default (see dirDefaultClosed).
+  dirs: Record<string, boolean>;
+  // Roots whose tree directories default to collapsed — set when a root is
+  // added, so a freshly registered tree starts fully closed. Only the dirs
+  // the user then opens are stored (as explicit `false` entries), which keeps
+  // the cookie small even for huge trees.
+  dirDefaultClosed: string[];
+  shortcuts: boolean;
+};
+
+// Cookie payload: only the exceptions are stored, as compact arrays.
+// d = explicitly closed dirs, o = explicitly opened dirs, dd = default-closed roots.
+type CollapseCookiePayload = {
+  r: string[];
+  f: string[];
+  d: string[];
+  o: string[];
+  dd: string[];
+  s: 0 | 1;
+};
+
+function collapsedKeys(map: Record<string, boolean>): string[] {
+  return Object.keys(map).filter((k) => map[k]);
+}
+
+function writeCollapseCookie(state: SidebarCollapse) {
+  const underDefaultClosedRoot = (p: string) =>
+    state.dirDefaultClosed.some((root) => p === root || p.startsWith(`${root}/`));
+  let payload: CollapseCookiePayload = {
+    r: collapsedKeys(state.roots),
+    f: collapsedKeys(state.folders),
+    // Store only entries that differ from their root's default: "closed"
+    // under a default-open root, "opened" under a default-closed root.
+    d: Object.keys(state.dirs).filter((k) => state.dirs[k] && !underDefaultClosedRoot(k)),
+    o: Object.keys(state.dirs).filter((k) => state.dirs[k] === false && underDefaultClosedRoot(k)),
+    dd: state.dirDefaultClosed,
+    s: state.shortcuts ? 1 : 0,
+  };
+  let encoded = encodeURIComponent(JSON.stringify(payload));
+  // Cookies cap at ~4KB. Directory paths dominate the payload, so shed those
+  // first — a dropped entry just means that folder reverts to its root's
+  // default state on the next reload.
+  while (encoded.length > 3800 && (payload.d.length > 0 || payload.o.length > 0)) {
+    if (payload.d.length > 0) {
+      payload = { ...payload, d: payload.d.slice(0, Math.floor(payload.d.length / 2)) };
+    } else {
+      payload = { ...payload, o: payload.o.slice(0, Math.floor(payload.o.length / 2)) };
+    }
+    encoded = encodeURIComponent(JSON.stringify(payload));
+  }
+  document.cookie = `${COLLAPSE_COOKIE}=${encoded}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`;
+}
 
 function findFolderById(nodes: ShortcutNode[], id: string): ShortcutFolderNode | null {
   for (const n of nodes) {
@@ -111,6 +184,12 @@ export function Sidebar({
   mode,
   onApply,
   onFolderCssChanged,
+  initialRoots,
+  initialTrees,
+  initialRootErrors,
+  initialShortcuts,
+  initialWorkspace,
+  initialCollapse,
 }: {
   selectedPath: string | null;
   onSelect: (path: string | null) => void;
@@ -122,66 +201,87 @@ export function Sidebar({
   // EditorShell uses this to refresh just the open file's previewCss without
   // disturbing in-progress edits.
   onFolderCssChanged?: () => void;
+  // Server-rendered initial data: the first paint shows the real sidebar
+  // instead of flashing the empty state while the client refetches.
+  initialRoots: AllowedRoot[];
+  initialTrees: Record<string, TreeEntry[]>;
+  initialRootErrors: Record<string, string>;
+  initialShortcuts: ShortcutNode[];
+  initialWorkspace: string | null;
+  initialCollapse: SidebarCollapse;
 }) {
-  const [roots, setRoots] = useState<AllowedRoot[]>([]);
-  const [trees, setTrees] = useState<Record<string, TreeEntry[]>>({});
-  const [rootErrors, setRootErrors] = useState<Record<string, string>>({});
+  const [roots, setRoots] = useState<AllowedRoot[]>(initialRoots);
+  const [trees, setTrees] = useState<Record<string, TreeEntry[]>>(initialTrees);
+  const [rootErrors, setRootErrors] = useState<Record<string, string>>(initialRootErrors);
   const [error, setError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [folderContextMenu, setFolderContextMenu] = useState<FolderContextMenuState | null>(null);
-  const [collapsedRoots, setCollapsedRoots] = useState<Record<string, boolean>>({});
-  const [shortcutTree, setShortcutTree] = useState<ShortcutNode[]>([]);
-  const [shortcutsCollapsed, setShortcutsCollapsed] = useState(false);
+  const [collapsedRoots, setCollapsedRoots] = useState<Record<string, boolean>>(
+    initialCollapse.roots,
+  );
+  const [shortcutTree, setShortcutTree] = useState<ShortcutNode[]>(initialShortcuts);
+  const [shortcutsCollapsed, setShortcutsCollapsed] = useState(initialCollapse.shortcuts);
   const [addFormFor, setAddFormFor] = useState<AddFormTarget | null>(null);
-  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>(
+    initialCollapse.folders,
+  );
+  const [collapsedDirs, setCollapsedDirs] = useState<Record<string, boolean>>(initialCollapse.dirs);
+  const [dirDefaultClosed, setDirDefaultClosed] = useState<string[]>(
+    initialCollapse.dirDefaultClosed,
+  );
   const [dragOverTarget, setDragOverTarget] = useState<DropTargetId | null>(null);
   const [dragSource, setDragSource] = useState<MoveSource | null>(null);
 
-  // Persist the tree open/collapse state across reloads. Kept in localStorage
-  // (not a cookie) since it's a potentially large per-folder map and never
-  // needs to be sent to the server. `hydrated` gates the save effect so the
-  // default (all-open) state isn't written back over the stored value before
-  // the restore below runs.
-  const [hydrated, setHydrated] = useState(false);
-
+  // One-time migration from the old localStorage collapse persistence to the
+  // cookie. Only adopted when the cookie hadn't been established yet, so an
+  // already-migrated cookie always wins.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once; initialCollapse never changes after mount
   useEffect(() => {
     try {
       const raw = localStorage.getItem(COLLAPSE_STORAGE_KEY);
-      if (raw) {
-        const saved = JSON.parse(raw) as {
-          roots?: Record<string, boolean>;
-          folders?: Record<string, boolean>;
-          shortcuts?: boolean;
-        };
-        if (saved.roots) setCollapsedRoots(saved.roots);
-        if (saved.folders) setCollapsedFolders(saved.folders);
-        if (typeof saved.shortcuts === "boolean") setShortcutsCollapsed(saved.shortcuts);
-      }
+      if (!raw) return;
+      localStorage.removeItem(COLLAPSE_STORAGE_KEY);
+      const cookieEmpty =
+        Object.keys(initialCollapse.roots).length === 0 &&
+        Object.keys(initialCollapse.folders).length === 0 &&
+        Object.keys(initialCollapse.dirs).length === 0 &&
+        initialCollapse.dirDefaultClosed.length === 0 &&
+        !initialCollapse.shortcuts;
+      if (!cookieEmpty) return;
+      const saved = JSON.parse(raw) as {
+        roots?: Record<string, boolean>;
+        folders?: Record<string, boolean>;
+        shortcuts?: boolean;
+      };
+      if (saved.roots) setCollapsedRoots(saved.roots);
+      if (saved.folders) setCollapsedFolders(saved.folders);
+      if (typeof saved.shortcuts === "boolean") setShortcutsCollapsed(saved.shortcuts);
     } catch {
-      // Corrupt or unavailable storage — fall back to the default open state.
+      // Corrupt or unavailable storage — fall back to the cookie state.
     }
-    setHydrated(true);
   }, []);
 
+  // Persist collapse state to the cookie so the server renders the exact
+  // open/closed layout on the next load (no post-hydration flash).
   useEffect(() => {
-    if (!hydrated) return;
-    try {
-      localStorage.setItem(
-        COLLAPSE_STORAGE_KEY,
-        JSON.stringify({
-          roots: collapsedRoots,
-          folders: collapsedFolders,
-          shortcuts: shortcutsCollapsed,
-        }),
-      );
-    } catch {
-      // Storage full or blocked — persistence is best-effort.
-    }
-  }, [hydrated, collapsedRoots, collapsedFolders, shortcutsCollapsed]);
+    writeCollapseCookie({
+      roots: collapsedRoots,
+      folders: collapsedFolders,
+      dirs: collapsedDirs,
+      dirDefaultClosed,
+      shortcuts: shortcutsCollapsed,
+    });
+  }, [collapsedRoots, collapsedFolders, collapsedDirs, dirDefaultClosed, shortcutsCollapsed]);
 
   const toggleFolder = useCallback((folderId: string) => {
     setCollapsedFolders((prev) => ({ ...prev, [folderId]: !prev[folderId] }));
+  }, []);
+
+  // `collapse` is the target state, computed by the caller from the current
+  // effective state (explicit entry or the root's default).
+  const toggleDir = useCallback((dirPath: string, collapse: boolean) => {
+    setCollapsedDirs((prev) => ({ ...prev, [dirPath]: collapse }));
   }, []);
 
   const openContextMenu = useCallback((x: number, y: number, path: string) => {
@@ -239,14 +339,36 @@ export function Sidebar({
     setCollapsedRoots((prev) => ({ ...prev, [rootPath]: !prev[rootPath] }));
   }, []);
 
-  const fetchRoots = useCallback(async () => {
+  // Workspace scoping (VS Code-style): show a single root's tree, or all.
+  // The server resolves `?ws=` URL param > `workspace` cookie and renders the
+  // scoped sidebar on first paint; this state just tracks later switches.
+  // The value is a root path or label; unknown values fall back to "all".
+  const [workspace, setWorkspace] = useState<string | null>(initialWorkspace);
+
+  // One-time migration from the old localStorage persistence to the cookie.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once; initialWorkspace never changes after mount
+  useEffect(() => {
     try {
-      const r = await fetch("/api/roots");
-      const data = await r.json();
-      setRoots(data.roots ?? []);
-    } catch (e) {
-      setError(String(e));
+      const saved = localStorage.getItem(WORKSPACE_STORAGE_KEY);
+      if (!saved) return;
+      localStorage.removeItem(WORKSPACE_STORAGE_KEY);
+      if (!initialWorkspace) {
+        setWorkspace(saved);
+        writeWorkspaceCookie(saved);
+      }
+    } catch {
+      // Storage unavailable — the cookie is the source of truth anyway.
     }
+  }, []);
+
+  const selectWorkspace = useCallback((rootPath: string | null) => {
+    setWorkspace(rootPath);
+    writeWorkspaceCookie(rootPath);
+    // Keep the URL shareable/bookmarkable without triggering a navigation.
+    const url = new URL(window.location.href);
+    if (rootPath) url.searchParams.set("ws", rootPath);
+    else url.searchParams.delete("ws");
+    window.history.replaceState(null, "", url);
   }, []);
 
   const fetchShortcuts = useCallback(async () => {
@@ -258,11 +380,6 @@ export function Sidebar({
       setError(String(e));
     }
   }, []);
-
-  useEffect(() => {
-    fetchRoots();
-    fetchShortcuts();
-  }, [fetchRoots, fetchShortcuts]);
 
   const reloadTree = useCallback(async (rootPath: string) => {
     try {
@@ -286,14 +403,30 @@ export function Sidebar({
     }
   }, []);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey is the parent's explicit "reload now" trigger
+  // `ws` matches a root by path or label; no match → show all roots.
+  const activeRoot = useMemo(
+    () =>
+      workspace ? (roots.find((r) => r.path === workspace || r.label === workspace) ?? null) : null,
+    [roots, workspace],
+  );
+  const visibleRoots = useMemo(() => (activeRoot ? [activeRoot] : roots), [activeRoot, roots]);
+
+  // On the first run, roots covered by the server-rendered initial data are
+  // skipped — refetching them immediately after hydration would be redundant.
+  const firstTreeLoad = useRef(true);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey is the parent's explicit "reload now" trigger; initialTrees/initialRootErrors are stable server props
   useEffect(() => {
-    for (const root of roots) reloadTree(root.path);
-  }, [roots, reloadTree, refreshKey]);
+    const skipPrefetched = firstTreeLoad.current;
+    firstTreeLoad.current = false;
+    for (const root of visibleRoots) {
+      if (skipPrefetched && (root.path in initialTrees || root.path in initialRootErrors)) continue;
+      reloadTree(root.path);
+    }
+  }, [visibleRoots, reloadTree, refreshKey]);
 
   // Live tree updates via SSE: refresh affected root when external add/unlink happens
   useEffect(() => {
-    if (roots.length === 0) return;
+    if (visibleRoots.length === 0) return;
     const es = new EventSource("/api/watch");
     const pending = new Set<string>();
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -317,8 +450,12 @@ export function Sidebar({
         data.event !== "unlinkDir"
       )
         return;
-      if (data.root) pending.add(data.root);
-      else for (const r of roots) pending.add(r.path);
+      if (data.root) {
+        // Only refresh roots currently shown; hidden ones reload on switch.
+        if (visibleRoots.some((r) => r.path === data.root)) pending.add(data.root);
+      } else {
+        for (const r of visibleRoots) pending.add(r.path);
+      }
       if (!timer) timer = setTimeout(flush, 200);
       // Also refresh shortcuts in case a shortcut target was moved/deleted
       // within a watched root.
@@ -328,7 +465,7 @@ export function Sidebar({
       if (timer) clearTimeout(timer);
       es.close();
     };
-  }, [roots, reloadTree, fetchShortcuts]);
+  }, [visibleRoots, reloadTree, fetchShortcuts]);
 
   const handleNewFile = useCallback(
     async (rootPath: string) => {
@@ -354,20 +491,37 @@ export function Sidebar({
     [reloadTree, onCreated],
   );
 
-  const handleAddRoot = useCallback(async (label: string, path: string) => {
-    const res = await fetch("/api/roots", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ label, path }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      return data.error ? `${data.error}${data.path ? ` (${data.path})` : ""}` : "Failed";
-    }
-    setRoots(data.roots ?? []);
-    setShowAddForm(false);
-    return null;
-  }, []);
+  const handleAddRoot = useCallback(
+    async (label: string, path: string) => {
+      const res = await fetch("/api/roots", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ label, path }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return data.error ? `${data.error}${data.path ? ` (${data.path})` : ""}` : "Failed";
+      }
+      const nextRoots: AllowedRoot[] = data.roots ?? [];
+      // Freshly registered roots start with every folder collapsed; dirs the
+      // user opens afterwards are stored as explicit exceptions, so the
+      // choice survives reloads.
+      const added = nextRoots.filter((r) => !roots.some((p) => p.path === r.path));
+      if (added.length > 0) {
+        setDirDefaultClosed((prev) => [
+          ...prev,
+          ...added.map((r) => r.path).filter((p) => !prev.includes(p)),
+        ]);
+        // If the sidebar is scoped to a workspace, the new root would be
+        // invisible — scope to it so the add has a visible result.
+        if (activeRoot) selectWorkspace(added[0].path);
+      }
+      setRoots(nextRoots);
+      setShowAddForm(false);
+      return null;
+    },
+    [roots, activeRoot, selectWorkspace],
+  );
 
   const handleAddShortcut = useCallback(async (rawPath: string, parentId: string | null) => {
     const res = await fetch("/api/shortcuts", {
@@ -568,11 +722,28 @@ export function Sidebar({
         const { [rootPath]: _, ...rest } = prev;
         return rest;
       });
+      // Drop the removed root's collapse bookkeeping so stale paths don't
+      // accumulate in the cookie.
+      setDirDefaultClosed((prev) => prev.filter((p) => p !== rootPath));
+      setCollapsedDirs((prev) => {
+        const next: Record<string, boolean> = {};
+        for (const [k, v] of Object.entries(prev)) {
+          if (k !== rootPath && !k.startsWith(`${rootPath}/`)) next[k] = v;
+        }
+        return next;
+      });
+      setCollapsedRoots((prev) => {
+        if (!(rootPath in prev)) return prev;
+        const { [rootPath]: _, ...rest } = prev;
+        return rest;
+      });
       // If the main content shows a file under the removed root, clear it.
       if (selectedPath && (selectedPath === rootPath || selectedPath.startsWith(`${rootPath}/`)))
         onSelect(null);
+      // If the removed root was the active workspace, fall back to all roots.
+      if (activeRoot?.path === rootPath) selectWorkspace(null);
     },
-    [selectedPath, onSelect],
+    [selectedPath, onSelect, activeRoot, selectWorkspace],
   );
 
   if (error) return <div className="p-5 text-sm text-[var(--danger)]">{error}</div>;
@@ -583,6 +754,10 @@ export function Sidebar({
     <div className="text-sm h-full flex flex-col">
       <div className="flex-1 overflow-y-auto">
         {isEmpty && !showAddForm && <EmptyState onAdd={() => setShowAddForm(true)} />}
+
+        {!isEmpty && roots.length > 1 && (
+          <WorkspaceSwitcher roots={roots} activeRoot={activeRoot} onSelect={selectWorkspace} />
+        )}
 
         {!isEmpty && (
           <div
@@ -691,7 +866,7 @@ export function Sidebar({
         )}
 
         <div className="px-3 pb-6">
-          {roots.map((root) => {
+          {visibleRoots.map((root) => {
             const isOpen = !collapsedRoots[root.path];
             return (
               <div key={root.path} className="mb-5 group">
@@ -729,6 +904,8 @@ export function Sidebar({
                         {root.path}
                       </div>
                     </div>
+                  ) : trees[root.path] === undefined ? (
+                    <TreeSkeleton />
                   ) : (
                     <TreeView
                       entries={trees[root.path] ?? []}
@@ -738,6 +915,9 @@ export function Sidebar({
                       // The root header row itself sits at depth 0 (its chevron
                       // is at px-2), so the root's entries start one level in.
                       depth={1}
+                      collapsedDirs={collapsedDirs}
+                      onToggleDir={toggleDir}
+                      dirsDefaultCollapsed={dirDefaultClosed.includes(root.path)}
                     />
                   ))}
               </div>
@@ -783,6 +963,158 @@ export function Sidebar({
         />
       )}
     </div>
+  );
+}
+
+function WorkspaceSwitcher({
+  roots,
+  activeRoot,
+  onSelect,
+}: {
+  roots: AllowedRoot[];
+  activeRoot: AllowedRoot | null;
+  onSelect: (rootPath: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const pick = (rootPath: string | null) => {
+    onSelect(rootPath);
+    setOpen(false);
+  };
+
+  return (
+    <div ref={rootRef} className="relative px-3 pt-3">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-md bg-[var(--surface-2)] hover:bg-[color-mix(in_srgb,var(--text)_6%,var(--surface-2))] transition-colors"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="ワークスペースを切り替え"
+      >
+        <span className="flex items-center gap-1.5 min-w-0">
+          <span className="text-[var(--text-subtle)] flex-shrink-0" aria-hidden="true">
+            <FolderIcon open={false} />
+          </span>
+          <span className="text-[12px] font-medium text-[var(--text)] truncate">
+            {activeRoot ? activeRoot.label : "All roots"}
+          </span>
+        </span>
+        <span className="text-[var(--text-subtle)] flex-shrink-0" aria-hidden="true">
+          <UpDownIcon />
+        </span>
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute left-3 right-3 top-full mt-1 py-1.5 rounded-md fade-in z-40 overflow-y-auto"
+          style={{
+            background: "var(--surface)",
+            border: "1px solid var(--border-subtle)",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)",
+            maxHeight: "min(60vh, 480px)",
+          }}
+        >
+          <WorkspaceMenuItem selected={activeRoot === null} onClick={() => pick(null)}>
+            All roots
+          </WorkspaceMenuItem>
+          {roots.map((r) => (
+            <WorkspaceMenuItem
+              key={r.path}
+              selected={activeRoot?.path === r.path}
+              onClick={() => pick(r.path)}
+              title={r.path}
+            >
+              {r.label}
+            </WorkspaceMenuItem>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WorkspaceMenuItem({
+  selected,
+  onClick,
+  title,
+  children,
+}: {
+  selected: boolean;
+  onClick: () => void;
+  title?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-checked={selected}
+      onClick={onClick}
+      title={title}
+      className="w-full flex items-center justify-between gap-3 px-3 py-1.5 text-left text-[12px] text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+    >
+      <span className="truncate">{children}</span>
+      {selected && (
+        <span className="text-[var(--primary)] flex-shrink-0" aria-hidden="true">
+          <CheckIcon />
+        </span>
+      )}
+    </button>
+  );
+}
+
+function UpDownIcon() {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4.5 6L8 2.5L11.5 6" />
+      <path d="M4.5 10L8 13.5L11.5 10" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2.8 8.6l3.4 3.4 7-7.6" />
+    </svg>
   );
 }
 
@@ -1281,18 +1613,43 @@ function ChevronIcon() {
   );
 }
 
+// Placeholder rows shown while a root's tree is being fetched (e.g. right
+// after switching to a workspace whose tree isn't cached yet).
+function TreeSkeleton() {
+  return (
+    <div className="animate-pulse" aria-hidden="true">
+      {[72, 56, 64].map((w, i) => (
+        <div
+          key={w}
+          className="flex items-center gap-2 py-[5px]"
+          style={{ paddingLeft: `${i === 1 ? 26 : 14}px` }}
+        >
+          <div className="w-[13px] h-[13px] rounded-sm bg-[var(--surface-2)] flex-shrink-0" />
+          <div className="h-[9px] rounded bg-[var(--surface-2)]" style={{ width: `${w}%` }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function TreeView({
   entries,
   selectedPath,
   onSelect,
   onContextMenu,
   depth,
+  collapsedDirs,
+  onToggleDir,
+  dirsDefaultCollapsed,
 }: {
   entries: TreeEntry[];
   selectedPath: string | null;
   onSelect: (path: string) => void;
   onContextMenu: (x: number, y: number, path: string) => void;
   depth: number;
+  collapsedDirs: Record<string, boolean>;
+  onToggleDir: (path: string, collapse: boolean) => void;
+  dirsDefaultCollapsed: boolean;
 }) {
   return (
     <ul>
@@ -1305,6 +1662,9 @@ function TreeView({
               onSelect={onSelect}
               onContextMenu={onContextMenu}
               depth={depth}
+              collapsedDirs={collapsedDirs}
+              onToggleDir={onToggleDir}
+              dirsDefaultCollapsed={dirsDefaultCollapsed}
             />
           ) : (
             <FileNode
@@ -1327,19 +1687,29 @@ function DirectoryNode({
   onSelect,
   onContextMenu,
   depth,
+  collapsedDirs,
+  onToggleDir,
+  dirsDefaultCollapsed,
 }: {
   entry: TreeEntry;
   selectedPath: string | null;
   onSelect: (path: string) => void;
   onContextMenu: (x: number, y: number, path: string) => void;
   depth: number;
+  collapsedDirs: Record<string, boolean>;
+  onToggleDir: (path: string, collapse: boolean) => void;
+  dirsDefaultCollapsed: boolean;
 }) {
-  const [open, setOpen] = useState(true);
+  // Collapse state lives in the shared map (persisted via cookie) so the
+  // server can render the exact open/closed layout on first paint. Dirs
+  // without an explicit entry follow their root's default.
+  const explicit = collapsedDirs[entry.path];
+  const open = explicit === undefined ? !dirsDefaultCollapsed : !explicit;
   return (
     <div>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => onToggleDir(entry.path, open)}
         className="tree-dir"
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
       >
@@ -1355,6 +1725,9 @@ function DirectoryNode({
           onSelect={onSelect}
           onContextMenu={onContextMenu}
           depth={depth + 1}
+          collapsedDirs={collapsedDirs}
+          onToggleDir={onToggleDir}
+          dirsDefaultCollapsed={dirsDefaultCollapsed}
         />
       )}
     </div>
