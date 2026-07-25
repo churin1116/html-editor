@@ -180,13 +180,13 @@ export function Sidebar({
   selectedPath,
   onSelect,
   refreshKey,
-  onCreated,
   mode,
   onApply,
   onFolderCssChanged,
   initialRoots,
   initialTrees,
   initialRootErrors,
+  initialTreeTruncated,
   initialShortcuts,
   initialWorkspace,
   initialCollapse,
@@ -194,7 +194,6 @@ export function Sidebar({
   selectedPath: string | null;
   onSelect: (path: string | null) => void;
   refreshKey: number;
-  onCreated: (path: string) => void;
   mode: EditorMode | null;
   onApply: (id: ActionId) => void;
   // Fired after a folder's cssPath was changed via the sidebar context menu.
@@ -206,6 +205,7 @@ export function Sidebar({
   initialRoots: AllowedRoot[];
   initialTrees: Record<string, TreeEntry[]>;
   initialRootErrors: Record<string, string>;
+  initialTreeTruncated: Record<string, boolean>;
   initialShortcuts: ShortcutNode[];
   initialWorkspace: string | null;
   initialCollapse: SidebarCollapse;
@@ -213,6 +213,9 @@ export function Sidebar({
   const [roots, setRoots] = useState<AllowedRoot[]>(initialRoots);
   const [trees, setTrees] = useState<Record<string, TreeEntry[]>>(initialTrees);
   const [rootErrors, setRootErrors] = useState<Record<string, string>>(initialRootErrors);
+  // Roots whose walk hit the scan budget — the tree is valid but incomplete,
+  // and the UI says so instead of silently dropping deep content.
+  const [treeTruncated, setTreeTruncated] = useState<Record<string, boolean>>(initialTreeTruncated);
   const [error, setError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -335,9 +338,6 @@ export function Sidebar({
     setContextMenu(null);
   }, []);
   const cancelRenameAlias = useCallback(() => setEditingAliasFor(null), []);
-  const toggleRoot = useCallback((rootPath: string) => {
-    setCollapsedRoots((prev) => ({ ...prev, [rootPath]: !prev[rootPath] }));
-  }, []);
 
   // Workspace scoping (VS Code-style): show a single root's tree, or all.
   // The server resolves `?ws=` URL param > `workspace` cookie and renders the
@@ -387,6 +387,7 @@ export function Sidebar({
       const data = await r.json();
       if (r.ok && data.tree) {
         setTrees((prev) => ({ ...prev, [rootPath]: data.tree }));
+        setTreeTruncated((prev) => ({ ...prev, [rootPath]: Boolean(data.truncated) }));
         setRootErrors((prev) => {
           if (!(rootPath in prev)) return prev;
           const { [rootPath]: _removed, ...rest } = prev;
@@ -466,30 +467,6 @@ export function Sidebar({
       es.close();
     };
   }, [visibleRoots, reloadTree, fetchShortcuts]);
-
-  const handleNewFile = useCallback(
-    async (rootPath: string) => {
-      const name = await promptDialog({
-        title: "新規 HTML ファイル",
-        placeholder: "ファイル名",
-        confirmLabel: "作成",
-      });
-      if (!name) return;
-      const res = await fetch("/api/file", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ dir: rootPath, name }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        toast.error(data.error ?? "作成に失敗しました");
-        return;
-      }
-      await reloadTree(rootPath);
-      onCreated(data.path);
-    },
-    [reloadTree, onCreated],
-  );
 
   const handleAddRoot = useCallback(
     async (label: string, path: string) => {
@@ -755,13 +732,9 @@ export function Sidebar({
       <div className="flex-1 overflow-y-auto">
         {isEmpty && !showAddForm && <EmptyState onAdd={() => setShowAddForm(true)} />}
 
-        {!isEmpty && roots.length > 1 && (
-          <WorkspaceSwitcher roots={roots} activeRoot={activeRoot} onSelect={selectWorkspace} />
-        )}
-
         {!isEmpty && (
           <div
-            className={`px-3 pt-4 pb-1 group/shortcuts relative transition-colors ${
+            className={`px-3 pt-3 pb-1 group/shortcuts relative transition-colors ${
               dnd.dragOverTarget === "root"
                 ? "bg-[color-mix(in_srgb,var(--text)_4%,transparent)] rounded-md"
                 : ""
@@ -844,82 +817,55 @@ export function Sidebar({
         )}
 
         {!isEmpty && (
-          <div className="flex items-center justify-between px-5 pt-3 pb-3">
-            <span className="section-label">Roots</span>
-            {!showAddForm && (
-              <button
-                type="button"
-                onClick={() => setShowAddForm(true)}
-                className="text-[11px] text-[var(--text-subtle)] hover:text-[var(--text)] transition-colors"
-                title="Add another root"
-              >
-                + add
-              </button>
-            )}
-          </div>
+          <WorkspaceSwitcher
+            roots={roots}
+            activeRoot={activeRoot}
+            onSelect={selectWorkspace}
+            onAddRoot={() => setShowAddForm(true)}
+            onRemoveRoot={handleRemoveRoot}
+          />
         )}
 
         {showAddForm && (
-          <div className={isEmpty ? "px-5 pt-6" : "px-3"}>
+          <div className={isEmpty ? "px-5 pt-6" : "px-3 pt-2"}>
             <AddRootForm onCancel={() => setShowAddForm(false)} onSubmit={handleAddRoot} />
           </div>
         )}
 
-        <div className="px-3 pb-6">
+        <div className="px-3 pt-2 pb-6">
           {visibleRoots.map((root) => {
-            const isOpen = !collapsedRoots[root.path];
             return (
-              <div key={root.path} className="mb-5 group">
-                <div className="flex items-center justify-between px-2 mb-1.5 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => toggleRoot(root.path)}
-                    className="flex items-center gap-1 min-w-0 flex-1 text-left tree-root-toggle"
-                    aria-expanded={isOpen}
-                  >
-                    <span className={`tree-dir-chevron ${isOpen ? "is-open" : ""}`}>
-                      <ChevronIcon />
-                    </span>
-                    <span className="text-[12px] font-medium text-[var(--text-muted)] truncate tracking-tight">
-                      {root.label}
-                    </span>
-                  </button>
-                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 flex-shrink-0">
-                    <IconBtn onClick={() => handleNewFile(root.path)} title="New HTML file">
-                      <PlusIcon />
-                    </IconBtn>
-                    <IconBtn
-                      onClick={() => handleRemoveRoot(root.path, root.label)}
-                      title="Remove root from list"
-                    >
-                      <CloseIcon />
-                    </IconBtn>
-                  </div>
-                </div>
-                {isOpen &&
-                  (rootErrors[root.path] ? (
-                    <div className="mx-2 px-3 py-2.5 text-[11.5px] text-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] rounded-md">
-                      <div className="font-medium mb-0.5">{rootErrors[root.path]}</div>
-                      <div className="text-[var(--text-muted)] break-all font-mono text-[10.5px]">
-                        {root.path}
-                      </div>
+              <div key={root.path} className="mb-5">
+                {rootErrors[root.path] ? (
+                  <div className="mx-2 px-3 py-2.5 text-[11.5px] text-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] rounded-md">
+                    <div className="font-medium mb-0.5">{rootErrors[root.path]}</div>
+                    <div className="text-[var(--text-muted)] break-all font-mono text-[10.5px]">
+                      {root.path}
                     </div>
-                  ) : trees[root.path] === undefined ? (
-                    <TreeSkeleton />
-                  ) : (
+                  </div>
+                ) : trees[root.path] === undefined ? (
+                  <TreeSkeleton />
+                ) : (
+                  <>
                     <TreeView
                       entries={trees[root.path] ?? []}
                       selectedPath={selectedPath}
                       onSelect={onSelect}
                       onContextMenu={openContextMenu}
-                      // The root header row itself sits at depth 0 (its chevron
-                      // is at px-2), so the root's entries start one level in.
-                      depth={1}
+                      // Root header rows are gone (the workspace switcher
+                      // replaces them), so entries start at the base level.
+                      depth={0}
                       collapsedDirs={collapsedDirs}
                       onToggleDir={toggleDir}
                       dirsDefaultCollapsed={dirDefaultClosed.includes(root.path)}
                     />
-                  ))}
+                    {treeTruncated[root.path] && (
+                      <div className="mx-2 mt-1 px-3 py-2 text-[10.5px] text-[color-mix(in_srgb,var(--warning)_55%,var(--text-subtle))] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] rounded-md">
+                        項目数が多いため、深い階層の一部は表示されていません
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             );
           })}
@@ -970,10 +916,14 @@ function WorkspaceSwitcher({
   roots,
   activeRoot,
   onSelect,
+  onAddRoot,
+  onRemoveRoot,
 }: {
   roots: AllowedRoot[];
   activeRoot: AllowedRoot | null;
   onSelect: (rootPath: string | null) => void;
+  onAddRoot: () => void;
+  onRemoveRoot: (rootPath: string, label: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -1014,7 +964,7 @@ function WorkspaceSwitcher({
             <FolderIcon open={false} />
           </span>
           <span className="text-[12px] font-medium text-[var(--text)] truncate">
-            {activeRoot ? activeRoot.label : "All roots"}
+            {activeRoot ? activeRoot.label : "ALL"}
           </span>
         </span>
         <span className="text-[var(--text-subtle)] flex-shrink-0" aria-hidden="true">
@@ -1033,7 +983,7 @@ function WorkspaceSwitcher({
           }}
         >
           <WorkspaceMenuItem selected={activeRoot === null} onClick={() => pick(null)}>
-            All roots
+            ALL
           </WorkspaceMenuItem>
           {roots.map((r) => (
             <WorkspaceMenuItem
@@ -1041,10 +991,26 @@ function WorkspaceSwitcher({
               selected={activeRoot?.path === r.path}
               onClick={() => pick(r.path)}
               title={r.path}
+              onRemove={() => {
+                setOpen(false);
+                onRemoveRoot(r.path, r.label);
+              }}
             >
               {r.label}
             </WorkspaceMenuItem>
           ))}
+          <div className="my-1 border-t border-[var(--border-subtle)]" />
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onAddRoot();
+            }}
+            className="w-full px-3 py-1.5 text-left text-[12px] text-[var(--text-muted)] hover:bg-[var(--surface-2)] transition-colors"
+          >
+            + Add
+          </button>
         </div>
       )}
     </div>
@@ -1055,29 +1021,46 @@ function WorkspaceMenuItem({
   selected,
   onClick,
   title,
+  onRemove,
   children,
 }: {
   selected: boolean;
   onClick: () => void;
   title?: string;
+  onRemove?: () => void;
   children: React.ReactNode;
 }) {
+  // The row is a div (not a button) so the remove control can be a real
+  // button without nesting interactive elements.
   return (
-    <button
-      type="button"
-      role="menuitemradio"
-      aria-checked={selected}
-      onClick={onClick}
-      title={title}
-      className="w-full flex items-center justify-between gap-3 px-3 py-1.5 text-left text-[12px] text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
-    >
-      <span className="truncate">{children}</span>
-      {selected && (
-        <span className="text-[var(--primary)] flex-shrink-0" aria-hidden="true">
-          <CheckIcon />
-        </span>
+    <div className="group/wsitem w-full flex items-center gap-2 pr-2 hover:bg-[var(--surface-2)] transition-colors">
+      <button
+        type="button"
+        role="menuitemradio"
+        aria-checked={selected}
+        onClick={onClick}
+        title={title}
+        className="flex-1 min-w-0 flex items-center justify-between gap-3 px-3 py-1.5 text-left text-[12px] text-[var(--text)]"
+      >
+        <span className="truncate">{children}</span>
+        {selected && (
+          <span className="text-[var(--primary)] flex-shrink-0" aria-hidden="true">
+            <CheckIcon />
+          </span>
+        )}
+      </button>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="opacity-0 group-hover/wsitem:opacity-100 text-[var(--text-subtle)] hover:text-[var(--danger)] transition-opacity flex-shrink-0"
+          title="Remove root from list"
+          aria-label="Remove root from list"
+        >
+          <CloseIcon />
+        </button>
       )}
-    </button>
+    </div>
   );
 }
 

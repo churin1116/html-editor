@@ -45,6 +45,7 @@ export function EditorShell({
   initialRoots,
   initialTrees,
   initialRootErrors,
+  initialTreeTruncated,
   initialShortcuts,
   initialWorkspace,
   initialCollapse,
@@ -55,6 +56,7 @@ export function EditorShell({
   initialRoots: AllowedRoot[];
   initialTrees: Record<string, TreeEntry[]>;
   initialRootErrors: Record<string, string>;
+  initialTreeTruncated: Record<string, boolean>;
   initialShortcuts: ShortcutNodeWithStatus[];
   initialWorkspace: string | null;
   initialCollapse: SidebarCollapse;
@@ -298,11 +300,6 @@ export function EditorShell({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleSave]);
 
-  const handleCreated = useCallback((newPath: string) => {
-    setRefreshKey((k) => k + 1);
-    setSelected(newPath);
-  }, []);
-
   return (
     <div
       className="grid h-screen transition-[grid-template-columns] duration-200 ease-out"
@@ -331,13 +328,13 @@ export function EditorShell({
             selectedPath={selected}
             onSelect={setSelected}
             refreshKey={refreshKey}
-            onCreated={handleCreated}
             mode={toolbarMode}
             onApply={applyAction}
             onFolderCssChanged={refreshPreviewCss}
             initialRoots={initialRoots}
             initialTrees={initialTrees}
             initialRootErrors={initialRootErrors}
+            initialTreeTruncated={initialTreeTruncated}
             initialShortcuts={initialShortcuts}
             initialWorkspace={initialWorkspace}
             initialCollapse={initialCollapse}

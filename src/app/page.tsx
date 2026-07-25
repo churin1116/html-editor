@@ -58,11 +58,15 @@ export default async function Page({
   const visibleRoots = activeRoot ? [activeRoot] : roots;
   const initialTrees: Record<string, TreeEntry[]> = {};
   const initialRootErrors: Record<string, string> = {};
+  const initialTreeTruncated: Record<string, boolean> = {};
   await Promise.all(
     visibleRoots.map(async (root) => {
       const result = await loadTreeForRoot(root.path);
       if ("error" in result) initialRootErrors[root.path] = result.error;
-      else initialTrees[root.path] = result.tree;
+      else {
+        initialTrees[root.path] = result.tree;
+        if (result.truncated) initialTreeTruncated[root.path] = true;
+      }
     }),
   );
 
@@ -108,6 +112,7 @@ export default async function Page({
       initialRoots={roots}
       initialTrees={initialTrees}
       initialRootErrors={initialRootErrors}
+      initialTreeTruncated={initialTreeTruncated}
       initialShortcuts={initialShortcuts}
       initialWorkspace={activeRoot?.path ?? null}
       initialCollapse={initialCollapse}
