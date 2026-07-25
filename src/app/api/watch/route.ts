@@ -1,3 +1,6 @@
+import { exec } from "node:child_process";
+import path from "node:path";
+import { promisify } from "node:util";
 import { loadAllowedRoots } from "@/lib/allowed-roots";
 import chokidar from "chokidar";
 import type { NextRequest } from "next/server";
@@ -12,10 +15,35 @@ type WatchEvent = {
 };
 
 const SUPPORTED = /\.(html?|md|markdown)$/i;
+const IGNORED_DIRS = new Set(["node_modules", "__pycache__"]);
+
+// fsevents don't propagate across network mounts, so chokidar would fall back
+// to recursively scanning (and polling) the whole tree over the wire — for a
+// large remote folder that saturates the event loop and wedges the server.
+// Roots on network filesystems are simply not live-watched; edits still work,
+// the sidebar just won't auto-refresh on external changes for those roots.
+const NETWORK_FS = /^(smbfs|afpfs|nfs|webdav)/;
+
+async function networkMountPoints(): Promise<string[]> {
+  try {
+    // Absolute path: under launchd the PATH may not include /sbin, and a
+    // failed lookup would silently disable the network-mount exclusion.
+    const { stdout } = await promisify(exec)("/sbin/mount");
+    return stdout.split("\n").flatMap((line) => {
+      const m = line.match(/ on (\/.+) \(([^,)]+)/);
+      return m && NETWORK_FS.test(m[2]) ? [m[1]] : [];
+    });
+  } catch {
+    return [];
+  }
+}
 
 export async function GET(req: NextRequest) {
   const roots = await loadAllowedRoots();
-  const rootPaths = roots.map((r) => r.path);
+  const netMounts = await networkMountPoints();
+  const rootPaths = roots
+    .map((r) => r.path)
+    .filter((p) => !netMounts.some((mp) => p === mp || p.startsWith(`${mp}/`)));
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -43,6 +71,8 @@ export async function GET(req: NextRequest) {
         ignoreInitial: true,
         persistent: true,
         ignored: (p, stats) => {
+          const base = path.basename(p);
+          if (base.startsWith(".") || IGNORED_DIRS.has(base)) return true;
           if (!stats) return false;
           if (stats.isDirectory()) return false;
           return !SUPPORTED.test(p);

@@ -15,5 +15,5 @@ export async function GET(req: Request) {
   if ("error" in result) {
     return NextResponse.json({ error: result.error, path: rootPath }, { status: result.status });
   }
-  return NextResponse.json({ tree: result.tree });
+  return NextResponse.json({ tree: result.tree, truncated: result.truncated });
 }

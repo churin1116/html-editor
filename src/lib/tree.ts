@@ -9,18 +9,66 @@ export type TreeEntry = {
   children?: TreeEntry[];
 };
 
-export async function walkTree(dir: string): Promise<TreeEntry[]> {
-  const entries = await readdir(dir, { withFileTypes: true });
+const EDITABLE_FILE_RE = /\.(html?|md|markdown)$/i;
+const IGNORED_DIRS = new Set(["node_modules", "__pycache__"]);
+// Hard ceiling on dirents scanned per root walk. A root pointing at a huge
+// tree (datasets, caches) would otherwise hang the server — the walk is
+// breadth-first, so shallow content always makes it into the tree before the
+// budget runs out; only the deepest levels of oversized roots are omitted.
+const MAX_SCANNED_ENTRIES = 30_000;
+// Network mounts (SMB/SSHFS) pay a round trip per readdir; batching hides it.
+const READDIR_CONCURRENCY = 16;
+
+export type WalkResult = { entries: TreeEntry[]; truncated: boolean };
+
+export async function walkTree(dir: string): Promise<WalkResult> {
+  const rootChildren: TreeEntry[] = [];
+  const queue: { dir: string; children: TreeEntry[] }[] = [{ dir, children: rootChildren }];
+  let scanned = 0;
+  while (queue.length > 0 && scanned < MAX_SCANNED_ENTRIES) {
+    const batch = queue.splice(0, READDIR_CONCURRENCY);
+    const listings = await Promise.all(
+      // An unreadable subdirectory (permissions, vanished network mount entry)
+      // drops out of the tree instead of failing the whole walk.
+      batch.map((item) => readdir(item.dir, { withFileTypes: true }).catch(() => [])),
+    );
+    for (let i = 0; i < batch.length; i++) {
+      const item = batch[i];
+      scanned += listings[i].length;
+      for (const entry of listings[i]) {
+        if (entry.name.startsWith(".") || IGNORED_DIRS.has(entry.name)) continue;
+        const full = path.join(item.dir, entry.name);
+        if (entry.isDirectory()) {
+          const children: TreeEntry[] = [];
+          item.children.push({ name: entry.name, path: full, type: "directory", children });
+          queue.push({ dir: full, children });
+        } else if (entry.isFile() && EDITABLE_FILE_RE.test(entry.name)) {
+          item.children.push({ name: entry.name, path: full, type: "file" });
+        }
+      }
+    }
+  }
+  const truncated = queue.length > 0;
+  if (truncated) {
+    console.warn(
+      `[tree] scan budget (${MAX_SCANNED_ENTRIES}) exceeded under ${dir}; tree truncated`,
+    );
+  }
+  return { entries: pruneAndSort(rootChildren), truncated };
+}
+
+// Directories that ended up with no editable descendants disappear; siblings
+// sort directories-first, then by name — same shape the old recursive walk
+// produced.
+function pruneAndSort(entries: TreeEntry[]): TreeEntry[] {
   const result: TreeEntry[] = [];
-  for (const entry of entries) {
-    if (entry.name.startsWith(".")) continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      const children = await walkTree(full);
+  for (const e of entries) {
+    if (e.type === "directory") {
+      const children = pruneAndSort(e.children ?? []);
       if (children.length === 0) continue;
-      result.push({ name: entry.name, path: full, type: "directory", children });
-    } else if (entry.isFile() && /\.(html?|md|markdown)$/i.test(entry.name)) {
-      result.push({ name: entry.name, path: full, type: "file" });
+      result.push({ ...e, children });
+    } else {
+      result.push(e);
     }
   }
   result.sort((a, b) => {
@@ -30,7 +78,9 @@ export async function walkTree(dir: string): Promise<TreeEntry[]> {
   return result;
 }
 
-export type TreeResult = { tree: TreeEntry[] } | { error: string; status: number };
+export type TreeResult =
+  | { tree: TreeEntry[]; truncated: boolean }
+  | { error: string; status: number };
 
 // Shared by the /api/tree route and the server-rendered initial sidebar so
 // both produce identical trees and error messages for a given root.
@@ -41,7 +91,8 @@ export async function loadTreeForRoot(rootPath: string): Promise<TreeResult> {
     if (!s.isDirectory()) {
       return { error: "Path is not a directory", status: 400 };
     }
-    return { tree: await walkTree(absolute) };
+    const { entries, truncated } = await walkTree(absolute);
+    return { tree: entries, truncated };
   } catch (err: unknown) {
     if (err instanceof PathNotAllowedError) {
       return { error: err.message, status: 403 };
