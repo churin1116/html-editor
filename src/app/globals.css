@@ -131,6 +131,42 @@ button {
   color: var(--text);
 }
 
+/* Wrapper for a tree row and its trailing action icons. The icons are siblings
+   of the row button (buttons can't nest), so the button loses :hover while the
+   pointer is over them — these rules keep the row highlighted across the whole
+   hover area. */
+.tree-row {
+  position: relative;
+}
+.tree-row:hover .tree-item {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.tree-row:hover .tree-item.is-selected {
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+.tree-row:hover .tree-item .file-icon {
+  opacity: 0.85;
+}
+.tree-row:hover .tree-dir {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  color: var(--text);
+}
+
+/* Brief flash on the row the sidebar search jumped to. */
+.tree-row.is-revealed {
+  border-radius: 6px;
+  animation: tree-reveal-flash 1.4s ease-out;
+}
+@keyframes tree-reveal-flash {
+  0%,
+  35% {
+    background: color-mix(in srgb, var(--primary) 22%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
 .tree-dir-chevron {
   display: inline-flex;
   width: 10px;

@@ -18,6 +18,8 @@ Built because viewing/editing personal Markdown notes from a code editor felt he
 - **External-edit conflict detection** — Captures `mtime` on open and rejects writes that would clobber concurrent changes (e.g., from VS Code or `git pull`).
 - **New file creation** — Sidebar `+ New` button creates an `.html` file under the chosen root.
 - **Workspaces** — When two or more roots are registered, a switcher at the top of the sidebar scopes the tree to a single root (VS Code-style project view) or shows all. The choice persists across reloads, and `?ws=<path-or-label>` in the URL pins a workspace per tab/bookmark.
+- **Name search** — A borderless search box in the sidebar footer finds files and folders by *name* (contents are never searched, and a term that only appears in the surrounding path doesn't match). Enter opens the best match — files open in the editor, folders expand — and the sidebar scrolls to it, unfolding parents and switching workspace as needed. Ambiguous queries float their candidates above the box (↑/↓ + Enter). Slash-shaped queries split into folder + name, so `reviews/index`, `~/notes/todo.md` and full absolute paths all work.
+- **Copy path** — Hovering any tree row (file, folder, or shortcut) reveals a copy icon at its right edge that puts the row's absolute path on the clipboard without opening the file or toggling the folder.
 - **Sidebar state persistence** — The active workspace and every fold (roots, tree directories, shortcut folders) are stored in cookies, and the sidebar — roots, trees, shortcuts — is rendered server-side, so the first paint already shows the exact last state with no flash or refetch. Newly added roots start with all folders collapsed; folders you open stay open across reloads.
 
 ## Quick start

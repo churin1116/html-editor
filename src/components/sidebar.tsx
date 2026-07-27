@@ -2,6 +2,14 @@
 
 import { confirmDialog, promptDialog } from "@/lib/dialogs";
 import { ACTIONS, type ActionIcon, type ActionId, type EditorMode } from "@/lib/editor-actions";
+import {
+  MAX_SEARCH_RESULTS,
+  type SearchEntry,
+  type SearchHit,
+  ancestorDirPaths,
+  buildSearchIndex,
+  searchEntries,
+} from "@/lib/sidebar-search";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -106,6 +114,24 @@ function findFolderById(nodes: ShortcutNode[], id: string): ShortcutFolderNode |
     if (n.id === id) return n;
     const r = findFolderById(n.children, id);
     if (r) return r;
+  }
+  return null;
+}
+
+// Ids of the shortcut folders that have to be open for `path` to be visible,
+// outermost first. null when the path isn't a shortcut at all.
+function shortcutFolderChain(
+  nodes: ShortcutNode[],
+  path: string,
+  trail: string[] = [],
+): string[] | null {
+  for (const n of nodes) {
+    if (n.type === "file") {
+      if (n.path === path) return trail;
+    } else {
+      const found = shortcutFolderChain(n.children, path, [...trail, n.id]);
+      if (found) return found;
+    }
   }
   return null;
 }
@@ -235,6 +261,10 @@ export function Sidebar({
   );
   const [dragOverTarget, setDragOverTarget] = useState<DropTargetId | null>(null);
   const [dragSource, setDragSource] = useState<MoveSource | null>(null);
+  // Row the search box asked to bring into view. A fresh object per request so
+  // picking the same result twice scrolls to it again.
+  const [reveal, setReveal] = useState<{ path: string } | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   // One-time migration from the old localStorage collapse persistence to the
   // cookie. Only adopted when the cookie hadn't been established yet, so an
@@ -723,13 +753,69 @@ export function Sidebar({
     [selectedPath, onSelect, activeRoot, selectWorkspace],
   );
 
+  // Search runs over what is already loaded — the fetched trees plus the
+  // shortcut list — so a lookup never hits the disk or the network.
+  const searchIndex = useMemo(() => buildSearchIndex(trees, shortcutTree), [trees, shortcutTree]);
+
+  const openSearchHit = useCallback(
+    (hit: SearchHit) => {
+      if (hit.rootPath) {
+        // A hit outside the active workspace would have nowhere to appear.
+        if (activeRoot && activeRoot.path !== hit.rootPath) selectWorkspace(hit.rootPath);
+        const ancestors = ancestorDirPaths(hit.rootPath, hit.path);
+        if (ancestors.length > 0 || hit.type === "directory") {
+          setCollapsedDirs((prev) => {
+            const next = { ...prev };
+            for (const dir of ancestors) next[dir] = false;
+            if (hit.type === "directory") next[hit.path] = false;
+            return next;
+          });
+        }
+      }
+      const folderChain = shortcutFolderChain(shortcutTree, hit.path);
+      if (folderChain) {
+        setShortcutsCollapsed(false);
+        if (folderChain.length > 0) {
+          setCollapsedFolders((prev) => {
+            const next = { ...prev };
+            for (const id of folderChain) next[id] = false;
+            return next;
+          });
+        }
+      }
+      if (hit.type === "file") onSelect(hit.path);
+      setReveal({ path: hit.path });
+    },
+    [activeRoot, selectWorkspace, onSelect, shortcutTree],
+  );
+
+  // Scroll the revealed row into view once it exists. Expanding folders or
+  // switching workspace can render it a tick (or a fetch) later, so this
+  // re-runs on the state that governs which rows are mounted and gives up
+  // silently until then.
+  const revealedRef = useRef<object | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the extra deps are the retry trigger — they decide which rows are mounted
+  useEffect(() => {
+    if (!reveal || revealedRef.current === reveal) return;
+    const el = scrollRef.current?.querySelector<HTMLElement>(
+      `[data-reveal-path="${CSS.escape(reveal.path)}"]`,
+    );
+    if (!el) return;
+    revealedRef.current = reveal;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.add("is-revealed");
+    // Deliberately not cancelled on cleanup: this effect re-runs whenever the
+    // tree changes, and a cleared timer would leave the class behind forever.
+    setTimeout(() => el.classList.remove("is-revealed"), 1400);
+  }, [reveal, trees, collapsedDirs, collapsedFolders, shortcutsCollapsed, shortcutTree]);
+
   if (error) return <div className="p-5 text-sm text-[var(--danger)]">{error}</div>;
 
   const isEmpty = roots.length === 0;
 
   return (
     <div className="text-sm h-full flex flex-col">
-      <div className="flex-1 overflow-y-auto">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto">
         {isEmpty && !showAddForm && <EmptyState onAdd={() => setShowAddForm(true)} />}
 
         {!isEmpty && (
@@ -871,7 +957,9 @@ export function Sidebar({
           })}
         </div>
       </div>
-      <div className="border-t border-[var(--border-subtle)] px-3 py-2 flex items-center gap-1">
+      {/* `relative` so the search popup can span the sidebar rather than the
+          narrow flex cell the input occupies. */}
+      <div className="relative border-t border-[var(--border-subtle)] px-3 py-2 flex items-center gap-1">
         <HelpButton mode={mode} onApply={onApply} />
         <SettingsButton />
         <a
@@ -885,6 +973,7 @@ export function Sidebar({
         >
           <GitHubIcon />
         </a>
+        <SidebarSearch index={searchIndex} onPick={openSearchHit} />
       </div>
       {contextMenu && (
         <ContextMenu
@@ -909,6 +998,215 @@ export function Sidebar({
         />
       )}
     </div>
+  );
+}
+
+// Borderless name lookup in the sidebar footer. Enter opens the best match;
+// when the query is ambiguous the candidates float above the input.
+function SidebarSearch({
+  index,
+  onPick,
+}: {
+  index: SearchEntry[];
+  onPick: (hit: SearchHit) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [listOpen, setListOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const results = useMemo(() => searchEntries(index, query), [index, query]);
+  // A single match needs no list — Enter just opens it.
+  const showList = listOpen && results.length > 1;
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the highlight resets whenever the query changes
+  useEffect(() => setActive(0), [query]);
+
+  useEffect(() => {
+    if (!showList) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setListOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [showList]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `active` is what moves the highlight, so it must re-run the scroll
+  useEffect(() => {
+    if (!showList) return;
+    listRef.current
+      ?.querySelector<HTMLElement>('[data-active="true"]')
+      ?.scrollIntoView({ block: "nearest" });
+  }, [showList, active]);
+
+  const pick = (hit: SearchHit) => {
+    setListOpen(false);
+    onPick(hit);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (results.length === 0) {
+        if (query.trim()) toast.error("一致するファイル・フォルダがありません");
+        return;
+      }
+      pick(results[Math.min(active, results.length - 1)]);
+      return;
+    }
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && results.length > 1) {
+      e.preventDefault();
+      setListOpen(true);
+      setActive((i) =>
+        e.key === "ArrowDown" ? Math.min(i + 1, results.length - 1) : Math.max(i - 1, 0),
+      );
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (showList) setListOpen(false);
+      else setQuery("");
+    }
+  };
+
+  return (
+    // Not `relative`: the popup below is positioned against the footer bar so
+    // it can use the full sidebar width.
+    <div ref={rootRef} className="flex-1 min-w-0">
+      {showList && (
+        <div
+          ref={listRef}
+          id="sidebar-search-results"
+          // biome-ignore lint/a11y/useSemanticElements: combobox popup; the options are buttons so they stay clickable
+          role="listbox"
+          tabIndex={-1}
+          aria-label="検索候補"
+          className="absolute bottom-full left-3 right-3 mb-1 py-1 rounded-md fade-in z-40 overflow-y-auto"
+          style={{
+            background: "var(--surface)",
+            border: "1px solid var(--border-subtle)",
+            boxShadow: "0 12px 32px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08)",
+            maxHeight: "min(50vh, 320px)",
+          }}
+        >
+          {results.map((hit, i) => (
+            <SearchResultRow
+              key={hit.path}
+              hit={hit}
+              active={i === active}
+              onHover={() => setActive(i)}
+              onPick={() => pick(hit)}
+            />
+          ))}
+          {results.length === MAX_SEARCH_RESULTS && (
+            <div className="px-3 pt-1 pb-0.5 text-[10px] text-[var(--text-subtle)]">
+              上位 {MAX_SEARCH_RESULTS} 件
+            </div>
+          )}
+        </div>
+      )}
+      <div className="flex items-center gap-1.5 pl-1.5">
+        <span className="text-[var(--text-subtle)] flex-shrink-0" aria-hidden="true">
+          <SearchIcon />
+        </span>
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setListOpen(true);
+          }}
+          onKeyDown={handleKeyDown}
+          onFocus={() => setListOpen(true)}
+          placeholder="ファイル名で検索"
+          spellCheck={false}
+          autoCapitalize="off"
+          autoComplete="off"
+          role="combobox"
+          aria-expanded={showList}
+          aria-controls="sidebar-search-results"
+          aria-autocomplete="list"
+          aria-label="ファイル名・フォルダ名で検索"
+          className="w-full min-w-0 bg-transparent border-0 outline-none py-1 text-[12px] text-[var(--text)] placeholder:text-[var(--text-subtle)]"
+        />
+      </div>
+    </div>
+  );
+}
+
+function SearchResultRow({
+  hit,
+  active,
+  onHover,
+  onPick,
+}: {
+  hit: SearchHit;
+  active: boolean;
+  onHover: () => void;
+  onPick: () => void;
+}) {
+  const dir = hit.path.slice(0, Math.max(0, hit.path.length - hit.name.length - 1));
+  const isMd = /\.(md|markdown)$/i.test(hit.name);
+  return (
+    <button
+      type="button"
+      // biome-ignore lint/a11y/useSemanticElements: option inside the search combobox popup
+      role="option"
+      aria-selected={active}
+      data-active={active}
+      // mousedown, not click: the input must not lose focus before the pick.
+      onMouseDown={(e) => {
+        e.preventDefault();
+        onPick();
+      }}
+      onMouseMove={onHover}
+      title={hit.path}
+      className={`w-full flex items-center gap-2 px-2.5 py-1 text-left transition-colors ${
+        active ? "bg-[var(--surface-2)]" : ""
+      }`}
+    >
+      <span
+        className={`file-icon flex-shrink-0 ${
+          hit.type === "directory" ? "" : isMd ? "file-icon-md" : "file-icon-html"
+        }`}
+        aria-hidden="true"
+      >
+        {hit.type === "directory" ? <FolderIcon open={false} /> : isMd ? <MdIcon /> : <HtmlIcon />}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[12px] text-[var(--text)]">
+          {hit.alias ?? hit.name}
+        </span>
+        <span className="block truncate text-[10px] text-[var(--text-subtle)] font-mono">
+          {shortenLeft(dir)}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+// Directories are distinguished by their tail, so trim from the left.
+function shortenLeft(value: string, max = 38): string {
+  return value.length <= max ? value : `…${value.slice(value.length - max)}`;
+}
+
+function SearchIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="7.2" cy="7.2" r="4.4" />
+      <path d="M10.5 10.5L13.6 13.6" />
+    </svg>
   );
 }
 
@@ -1690,17 +1988,25 @@ function DirectoryNode({
   const open = explicit === undefined ? !dirsDefaultCollapsed : !explicit;
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => onToggleDir(entry.path, open)}
-        className="tree-dir"
-        style={{ paddingLeft: `${depth * 12 + 8}px` }}
-      >
-        <span className={`tree-dir-chevron ${open ? "is-open" : ""}`}>
-          <ChevronIcon />
-        </span>
-        <span className="truncate">{entry.name}</span>
-      </button>
+      {/* The hover group covers just this row, not the nested children. */}
+      <div className="tree-row group/row" data-reveal-path={entry.path}>
+        <button
+          type="button"
+          onClick={() => onToggleDir(entry.path, open)}
+          className="tree-dir"
+          style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "28px" }}
+          aria-expanded={open}
+        >
+          <span className={`tree-dir-chevron ${open ? "is-open" : ""}`}>
+            <ChevronIcon />
+          </span>
+          <span className="truncate">{entry.name}</span>
+        </button>
+        <CopyPathButton
+          path={entry.path}
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100"
+        />
+      </div>
       {open && entry.children && (
         <TreeView
           entries={entry.children}
@@ -1735,25 +2041,106 @@ function FileNode({
   const display = entry.name.replace(/\.(html?|md|markdown)$/i, "");
   const isMd = ext === "md" || ext === "markdown";
   return (
+    <div className="tree-row group/row" data-reveal-path={entry.path}>
+      <button
+        type="button"
+        onClick={() => onSelect(entry.path)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onContextMenu(e.clientX, e.clientY, entry.path);
+        }}
+        className={`tree-item ${isSelected ? "is-selected" : ""}`}
+        style={{ paddingLeft: `${depth * 12 + 14}px`, paddingRight: "28px" }}
+        title={entry.path}
+      >
+        <span
+          className={`file-icon ${isMd ? "file-icon-md" : "file-icon-html"} flex-shrink-0`}
+          aria-hidden="true"
+        >
+          {isMd ? <MdIcon /> : <HtmlIcon />}
+        </span>
+        <span className="truncate flex-1">{display}</span>
+      </button>
+      <CopyPathButton
+        path={entry.path}
+        className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100"
+      />
+    </div>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="5.8" y="5.8" width="8" height="8" rx="1.2" />
+      <path d="M10.2 3.4V3.2c0-.55-.45-1-1-1H3.2c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h.2" />
+    </svg>
+  );
+}
+
+// Trailing "copy absolute path" control for a tree row. It is rendered as a
+// sibling of the row's main button (buttons can't nest), so clicking it never
+// opens the file or toggles the folder. Visibility is left to the caller so
+// each row type can hook it to its own hover group.
+function CopyPathButton({ path, className = "" }: { path: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    [],
+  );
+
+  const handleClick = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(path);
+    } catch {
+      // Clipboard can be unavailable (insecure context) or blocked by policy.
+      toast.error("パスをコピーできませんでした");
+      return;
+    }
+    setCopied(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setCopied(false), 1200);
+  };
+
+  return (
     <button
       type="button"
-      onClick={() => onSelect(entry.path)}
-      onContextMenu={(e) => {
+      onClick={handleClick}
+      // The row wrapper also handles drag and context menu; keep those from
+      // reacting to interactions aimed at this button.
+      onMouseDown={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.stopPropagation()}
+      draggable={false}
+      onDragStart={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        onContextMenu(e.clientX, e.clientY, entry.path);
       }}
-      className={`tree-item ${isSelected ? "is-selected" : ""}`}
-      style={{ paddingLeft: `${depth * 12 + 14}px` }}
-      title={entry.path}
+      title={copied ? "コピーしました" : "絶対パスをコピー"}
+      aria-label={`絶対パスをコピー: ${path}`}
+      className={`inline-flex items-center justify-center w-5 h-5 rounded flex-shrink-0 transition-[opacity,color,background-color] duration-150 ${
+        copied
+          ? "text-[var(--primary)]"
+          : "text-[var(--text-subtle)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]"
+      } ${className}`}
     >
-      <span
-        className={`file-icon ${isMd ? "file-icon-md" : "file-icon-html"} flex-shrink-0`}
-        aria-hidden="true"
-      >
-        {isMd ? <MdIcon /> : <HtmlIcon />}
-      </span>
-      <span className="truncate flex-1">{display}</span>
+      {copied ? <CheckIcon /> : <CopyIcon />}
     </button>
   );
 }
@@ -2081,7 +2468,10 @@ function ShortcutItem({
     file.path,
   ].filter(Boolean);
   return (
-    <div className={`relative group/shortcut ${isDragging ? "opacity-50" : ""}`}>
+    <div
+      className={`tree-row group/shortcut ${isDragging ? "opacity-50" : ""}`}
+      data-reveal-path={file.path}
+    >
       {isEditing ? (
         <AliasRenameInput
           initial={file.alias ?? baseDisplay}
@@ -2105,7 +2495,7 @@ function ShortcutItem({
             onDragStart={(e) => dnd.onDragStart(e, { kind: "file", path: file.path })}
             onDragEnd={dnd.onDragEnd}
             className={`tree-item ${isSelected ? "is-selected" : ""} ${missing ? "is-missing" : ""}`}
-            style={{ paddingLeft: `${depth * 12 + 14}px`, paddingRight: "28px" }}
+            style={{ paddingLeft: `${depth * 12 + 14}px`, paddingRight: "52px" }}
             title={titleParts.join("\n")}
           >
             <span
@@ -2116,18 +2506,24 @@ function ShortcutItem({
             </span>
             <span className="truncate flex-1">{display}</span>
           </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onRemove(file.path);
-            }}
-            title="Remove shortcut"
-            aria-label="Remove shortcut"
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-opacity opacity-0 group-hover/shortcut:opacity-100"
-          >
-            <CloseIcon />
-          </button>
+          <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+            <CopyPathButton
+              path={file.path}
+              className="opacity-0 group-hover/shortcut:opacity-100 focus-visible:opacity-100"
+            />
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRemove(file.path);
+              }}
+              title="Remove shortcut"
+              aria-label="Remove shortcut"
+              className="inline-flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-opacity opacity-0 group-hover/shortcut:opacity-100 focus-visible:opacity-100"
+            >
+              <CloseIcon />
+            </button>
+          </div>
         </>
       )}
     </div>
