@@ -1294,11 +1294,25 @@ export function Sidebar({
         method: "DELETE",
       });
       const data = await res.json();
-      if (!res.ok) {
+      // 404 means the root is already gone — the config was edited elsewhere
+      // while this page held an older copy of the list. The user asked for the
+      // row to go away, and it has; re-read the list so it disappears instead
+      // of erroring on every click.
+      if (res.status === 404) {
+        const fresh = await fetch("/api/roots")
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null);
+        if (!fresh?.roots) {
+          toast.error(data.error ?? "削除に失敗しました");
+          return;
+        }
+        setRoots(fresh.roots);
+      } else if (!res.ok) {
         toast.error(data.error ?? "削除に失敗しました");
         return;
+      } else {
+        setRoots(data.roots ?? []);
       }
-      setRoots(data.roots ?? []);
       setTrees((prev) => {
         const { [rootPath]: _, ...rest } = prev;
         return rest;
