@@ -26,7 +26,11 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
       </head>
       <body className="bg-canvas">
         <DialogProvider>{children}</DialogProvider>
-        <Toaster position="bottom-right" richColors />
+        {/* Borderless toasts: the shadow already lifts them off the page, and
+            the outline read as a second frame next to the editor's own cards.
+            Set inline so it wins over sonner's own rules (including the
+            per-type borders richColors adds) without an !important. */}
+        <Toaster position="bottom-right" richColors toastOptions={{ style: { border: "none" } }} />
       </body>
     </html>
   );

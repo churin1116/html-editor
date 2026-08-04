@@ -29,7 +29,9 @@ const AlertDialogContent = React.forwardRef<
     <AlertDialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-1/2 top-1/2 z-50 grid w-[min(460px,92vw)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface)] p-0 shadow-xl fade-in",
+        // No border, matching DialogContent — the overlay and shadow carry the
+        // separation on their own.
+        "fixed left-1/2 top-1/2 z-50 grid w-[min(460px,92vw)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg bg-[var(--surface)] p-0 shadow-xl fade-in",
         className,
       )}
       {...props}

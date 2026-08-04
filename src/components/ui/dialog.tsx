@@ -32,7 +32,9 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-1/2 top-1/2 z-50 grid w-[min(520px,92vw)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface)] p-0 shadow-xl fade-in",
+        // No border: the overlay and the shadow already separate the dialog
+        // from the page, and the outline read as a second frame.
+        "fixed left-1/2 top-1/2 z-50 grid w-[min(520px,92vw)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg bg-[var(--surface)] p-0 shadow-xl fade-in",
         className,
       )}
       {...props}
