@@ -50,7 +50,15 @@ export function ConflictDialog({
     <dialog
       ref={dialogRef}
       aria-labelledby="conflict-title"
-      className="bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg shadow-xl p-0 backdrop:bg-black/40"
+      // No outer border, matching the shadcn dialogs — the backdrop and shadow
+      // carry the separation. The internal rules (header, diff pane) stay:
+      // those divide the dialog's own regions rather than frame it.
+      //
+      // `m-auto` restores what a modal <dialog> does on its own: the browser
+      // centers it with margin:auto inside its inset:0 box, and Tailwind's
+      // preflight resets that to margin:0, which pinned this to the top-left
+      // corner over the sidebar.
+      className="m-auto bg-[var(--surface)] rounded-lg shadow-xl p-0 backdrop:bg-black/40"
       style={{
         width: showDiff ? "min(1100px, 95vw)" : "min(520px, 92vw)",
         maxHeight: "88vh",
