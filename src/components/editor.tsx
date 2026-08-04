@@ -718,8 +718,11 @@ async function insertLinkCardAt(view: EditorView, url: string) {
   const meta = await fetchLinkCardMeta(url);
   if (meta.title) toast.dismiss(toastId);
   else toast("リンク情報を取得できませんでした（URL のみのカードにします）", { id: toastId });
-  // The document may have moved on while the fetch was in flight; drop the
-  // card at the caret rather than at a remembered position.
+  // The fetch takes seconds; the file may have been closed or switched in the
+  // meantime, which tears this view down.
+  if (view.isDestroyed) return;
+  // The document may have moved on too; drop the card at the caret rather
+  // than at a remembered position.
   const type = view.state.schema.nodes.linkCard;
   if (!type) return;
   const node = type.create(meta);
