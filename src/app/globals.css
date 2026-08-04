@@ -444,3 +444,21 @@ button {
   background: var(--border-subtle);
   width: 100%;
 }
+
+/* Link card: a block you select and move, not text you edit. The anchor is
+   inert inside the editor (like every other link here — Link is configured
+   with openOnClick: false); the card opens when the saved file is read. */
+.tiptap.prose-canvas .link-card {
+  cursor: grab;
+}
+.tiptap.prose-canvas .link-card:active {
+  cursor: grabbing;
+}
+.tiptap.prose-canvas .link-card .link-card-body {
+  pointer-events: none;
+}
+.tiptap.prose-canvas .link-card.ProseMirror-selectednode {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+  border-radius: var(--radius-md);
+}

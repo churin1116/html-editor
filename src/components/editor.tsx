@@ -18,6 +18,8 @@ import {
   Underline,
   Var_,
 } from "@/lib/inline-marks";
+import { fetchLinkCardMeta, isSingleUrl } from "@/lib/link-card";
+import { LinkCard } from "@/lib/link-card-node";
 import { Aside, Div, Figcaption, Figure, ParagraphClass, Span } from "@/lib/passthrough-nodes";
 import { Rp, Rt, Ruby } from "@/lib/ruby-nodes";
 import { loadScroll, saveScroll } from "@/lib/scroll-memory";
@@ -158,6 +160,10 @@ export function Editor({
       Details,
       Summary,
       Section,
+      // Must come before Div: both claim <div>, and the card's parse rule
+      // wins on priority, not on order — but keeping it adjacent documents
+      // the relationship.
+      LinkCard,
       Div,
       Aside,
       Figure,
@@ -244,9 +250,23 @@ export function Editor({
       },
       handlePaste: (view, event) => {
         const files = extractImageFilesFromDataTransfer(event.clipboardData);
-        if (files.length === 0) return false;
+        if (files.length > 0) {
+          event.preventDefault();
+          uploadAndInsert(view, files);
+          return true;
+        }
+        // A bare URL pasted into an empty paragraph becomes a card. Pasting
+        // into text, or over a selection, stays an ordinary paste — the user
+        // is quoting a URL, not filing a link.
+        const text = event.clipboardData?.getData("text/plain") ?? "";
+        if (!isSingleUrl(text)) return false;
+        const { selection, schema } = view.state;
+        if (!selection.empty) return false;
+        const parent = selection.$from.parent;
+        if (parent.type.name !== "paragraph" || parent.content.size > 0) return false;
+        if (!schema.nodes.linkCard) return false;
         event.preventDefault();
-        uploadAndInsert(view, files);
+        void insertLinkCardAt(view, text.trim());
         return true;
       },
       handleDrop: (view, event) => {
@@ -687,4 +707,25 @@ async function uploadAndInsert(view: EditorView, files: File[], at?: number) {
       toast.error(message, { id: toastId });
     }
   }
+}
+
+// Turns a pasted URL into a card. The node is inserted only after its
+// metadata is in hand, so the document never holds a half-built card that a
+// save could catch mid-flight — and the paste is one undo step, not two.
+// A page that yields nothing still becomes a card showing its URL.
+async function insertLinkCardAt(view: EditorView, url: string) {
+  const toastId = toast.loading("リンク情報を取得中…");
+  const meta = await fetchLinkCardMeta(url);
+  if (meta.title) toast.dismiss(toastId);
+  else toast("リンク情報を取得できませんでした（URL のみのカードにします）", { id: toastId });
+  // The fetch takes seconds; the file may have been closed or switched in the
+  // meantime, which tears this view down.
+  if (view.isDestroyed) return;
+  // The document may have moved on too; drop the card at the caret rather
+  // than at a remembered position.
+  const type = view.state.schema.nodes.linkCard;
+  if (!type) return;
+  const node = type.create(meta);
+  view.dispatch(view.state.tr.replaceSelectionWith(node).scrollIntoView());
+  view.focus();
 }
