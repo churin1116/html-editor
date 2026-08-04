@@ -34,23 +34,31 @@ declare module "@tiptap/core" {
   }
 }
 
+// Image URLs come from someone else's page, so both the thumbnail and the
+// favicon are held to http(s) — a page is free to hand us `javascript:` or
+// `data:` in its <link rel="icon">, and neither belongs in a file we write.
+// A card renders fine with either image missing.
+function httpUrl(raw: string): string | null {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
 // The thumbnail is painted as a CSS background rather than an <img>: the
 // image is decorative, and the URL points at someone else's server, so it
 // will sometimes 404, rate-limit, or simply be unreachable when the file is
 // read offline. A background degrades to the empty placeholder; an <img>
 // would leave a broken-image glyph in the middle of the card.
 //
-// Returns null unless the URL is plainly http(s); the quote and backslash
-// escapes keep a hostile value from closing url("…") and appending its own
-// declarations to the style attribute.
+// The quote and backslash escapes keep a hostile value from closing url("…")
+// and appending its own declarations to the style attribute.
 function cssBackgroundUrl(raw: string): string | null {
-  try {
-    const u = new URL(raw);
-    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-    return u.toString().replace(/["\\]/g, encodeURIComponent);
-  } catch {
-    return null;
-  }
+  const url = httpUrl(raw);
+  return url ? url.replace(/["\\]/g, encodeURIComponent) : null;
 }
 
 // Round-trips one attribute through a data-* attribute of the same name.
@@ -100,8 +108,9 @@ export const LinkCard = Node.create({
     const favicon = node.attrs.favicon as string | null;
 
     const site: DOMOutputSpec[] = [];
-    if (favicon) {
-      site.push(["img", { class: "link-card-favicon", src: favicon, alt: "" }]);
+    const faviconUrl = favicon ? httpUrl(favicon) : null;
+    if (faviconUrl) {
+      site.push(["img", { class: "link-card-favicon", src: faviconUrl, alt: "" }]);
     }
     site.push(["span", {}, siteName || hostLabel(url)]);
 

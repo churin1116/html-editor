@@ -1,3 +1,4 @@
+import { lookup } from "node:dns/promises";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -19,26 +20,62 @@ const FETCH_TIMEOUT_MS = 8000;
 const MAX_BODY_BYTES = 512 * 1024;
 const USER_AGENT = "Mozilla/5.0 (compatible; html-editor link card)";
 
+function isPrivateIPv4(ip: string): boolean {
+  const m = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a >= 224) return true; // multicast / reserved
+  return false;
+}
+
+function isPrivateAddress(ip: string): boolean {
+  const addr = ip.toLowerCase().replace(/%.*$/, ""); // drop any zone id
+  if (!addr.includes(":")) return isPrivateIPv4(addr);
+  if (addr === "::1" || addr === "::") return true;
+  // ::ffff:127.0.0.1 and friends carry an IPv4 address in the tail.
+  const mapped = addr.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (mapped) return isPrivateIPv4(mapped[1]);
+  if (/^f[cd]/.test(addr)) return true; // fc00::/7 unique-local
+  if (/^fe[89ab]/.test(addr)) return true; // fe80::/10 link-local
+  return false;
+}
+
 function isPrivateHostname(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/\.$/, "");
   if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) {
     return true;
   }
-  // IPv6 literals are rejected wholesale rather than classified (::1, fd00::/8,
-  // IPv4-mapped forms) — public sites are reachable by hostname anyway.
-  if (host.includes(":")) return true;
-  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (m) {
-    const [a, b] = [Number(m[1]), Number(m[2])];
-    if (a === 0 || a === 10 || a === 127) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a >= 224) return true; // multicast / reserved
-  }
-  return false;
+  // A bracketed IPv6 literal arrives here unbracketed.
+  if (host.includes(":")) return isPrivateAddress(host);
+  return isPrivateIPv4(host);
 }
 
+// A hostname check alone is not enough: a perfectly public name can carry an
+// A record pointing at 127.0.0.1 or 10.x. Every address the name resolves to
+// has to be public, and the check is repeated for each redirect hop.
+//
+// This still isn't airtight — the name is resolved a second time when the
+// socket connects, so a DNS server answering with a short TTL could return a
+// different address for that second lookup. Closing that window needs a
+// custom connect/lookup hook (an undici Agent), which would mean taking on
+// undici as a direct dependency; for an editor bound to localhost, and a
+// response that is only mined for meta tags, this is where it stops.
+async function resolvesToPublicAddress(hostname: string): Promise<boolean> {
+  try {
+    const addresses = await lookup(hostname, { all: true, verbatim: true });
+    if (addresses.length === 0) return false;
+    return addresses.every((a) => !isPrivateAddress(a.address));
+  } catch {
+    return false; // unresolvable — nothing to fetch anyway
+  }
+}
+
+// Syntax and literal-address checks only; call resolvesToPublicAddress before
+// actually connecting.
 function validateUrl(raw: string): URL | null {
   let url: URL;
   try {
@@ -56,6 +93,7 @@ function validateUrl(raw: string): URL | null {
 async function fetchWithGuards(startUrl: URL): Promise<{ res: Response; finalUrl: URL } | null> {
   let current = startUrl;
   for (let i = 0; i <= MAX_REDIRECTS; i++) {
+    if (!(await resolvesToPublicAddress(current.hostname))) return null;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     let res: Response;
