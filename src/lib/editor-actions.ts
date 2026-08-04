@@ -1,4 +1,5 @@
 import { promptDialog } from "@/lib/dialogs";
+import { fetchLinkCardMeta, isSingleUrl } from "@/lib/link-card";
 import { redo, undo } from "@codemirror/commands";
 import type { EditorView } from "@codemirror/view";
 import type { Editor as TiptapEditor } from "@tiptap/react";
@@ -17,6 +18,7 @@ export type ActionId =
   | "quote"
   | "codeBlock"
   | "link"
+  | "linkCard"
   | "unlink"
   | "table"
   | "details"
@@ -71,6 +73,7 @@ export const ACTIONS: ActionDef[] = [
   { id: "quote", label: "> 引用", supports: ["html", "md"] },
   { id: "codeBlock", label: "``` コードブロック ```", supports: ["html", "md"] },
   { id: "link", label: "リンク", hint: "⌘+K", supports: ["html", "md"] },
+  { id: "linkCard", label: "リンクカード", supports: ["html"] },
   { id: "unlink", label: "装飾を解除", supports: ["html"] },
   { id: "table", label: "テーブル", icon: "table", supports: ["html", "md"] },
   { id: "details", label: "▾ 折りたたみ", supports: ["html", "md"] },
@@ -211,6 +214,7 @@ export function applyMdAction(view: EditorView, id: ActionId) {
       redo(view);
       break;
     // HTML-only actions are no-ops in Markdown mode.
+    case "linkCard":
     case "unlink":
     case "underline":
     case "sup":
@@ -286,6 +290,28 @@ async function insertLink(editor: TiptapEditor) {
   if (url) editor.chain().focus().setLink({ href: url }).run();
 }
 
+// The card is inserted only once its metadata is in hand, so what lands in the
+// document is already final — nothing is fetched later, and a save that
+// happens right after the insert can't race an in-flight request. A page that
+// gives us nothing still becomes a card showing its URL.
+async function insertLinkCard(editor: TiptapEditor) {
+  const raw = await promptDialog({
+    title: "リンクカード",
+    description: "OGP（タイトル・説明・画像）を取得してカードとして挿入します。",
+    placeholder: "https://example.com/article",
+    confirmLabel: "挿入",
+  });
+  const url = raw?.trim();
+  if (!url) return;
+  if (!isSingleUrl(url)) {
+    toast.error("http(s) の URL を入力してください");
+    return;
+  }
+  const meta = await fetchLinkCardMeta(url);
+  if (!meta.title) toast("リンク情報を取得できませんでした（URL のみのカードにします）");
+  editor.chain().focus().setLinkCard(meta).run();
+}
+
 // Insert an empty <dl><dt>用語</dt><dd><p>説明</p></dd></dl> structure so
 // the user can immediately tab into the placeholders and fill in the term
 // and definition.
@@ -347,6 +373,9 @@ export function applyHtmlAction(editor: TiptapEditor, id: ActionId) {
       break;
     case "link":
       void insertLink(editor);
+      break;
+    case "linkCard":
+      void insertLinkCard(editor);
       break;
     // Generic "remove all inline marks at cursor". Subsumes the old
     // "unlink" behaviour: anything wrapped around the current selection

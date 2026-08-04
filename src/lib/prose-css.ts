@@ -104,4 +104,81 @@ ${PROSE_HEADING_SIZES.map((size, i) => `.prose-canvas h${i + 1} { font-size: ${s
 .prose-canvas details[open] > summary::before { transform: rotate(90deg); }
 .prose-canvas details > *:not(summary) { padding-left: 0.85em; padding-right: 0.85em; }
 .prose-canvas details > *:last-child:not(summary) { padding-bottom: 0.6em; }
+/* リンクカード。中身は保存 HTML に焼き込まれ、色・角丸・影は Chameleon の
+   変数から取るのでテーマ切り替えにそのまま追従する。 */
+.prose-canvas .link-card { margin: 1.6em 0; }
+.prose-canvas .link-card-body {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+  color: var(--text);
+  text-decoration: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.prose-canvas .link-card-body:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+  text-decoration: none;
+}
+.prose-canvas .link-card-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.3em;
+  padding: 0.85em 1.05em;
+  line-height: 1.5;
+}
+.prose-canvas .link-card-title {
+  font-weight: 600;
+  font-size: 0.95em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.prose-canvas .link-card-desc {
+  font-size: 0.82em;
+  color: var(--text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.prose-canvas .link-card-site {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  font-size: 0.76em;
+  color: var(--text-subtle);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.prose-canvas .link-card-favicon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border-radius: 2px;
+}
+/* サムネイルは img ではなく背景画像。取得できないときは（オフラインや
+   リンク先の画像削除でも）壊れアイコンではなく下地の色が残る。 */
+.prose-canvas .link-card-thumb {
+  flex: 0 0 130px;
+  min-height: 104px;
+  background-color: var(--surface-2);
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+@media (max-width: 560px) {
+  .prose-canvas .link-card-thumb { flex-basis: 92px; min-height: 88px; }
+}
 `.trim();
