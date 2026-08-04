@@ -7,6 +7,7 @@ import { PathNotAllowedError, resolveSafePath } from "@/lib/fs-safe";
 import { formatForSave } from "@/lib/html-pretty";
 import { classifyHtml, wrapContent } from "@/lib/html-template";
 import { loadFileFromDisk, readFileMaterializing } from "@/lib/load-file";
+import { renameNode } from "@/lib/rename";
 import { getSettings } from "@/lib/settings";
 import { NextResponse } from "next/server";
 
@@ -143,15 +144,23 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
   const { dir, name } = body;
-  if (!dir || !name) {
+  const rawName = name?.trim();
+  if (!dir || !rawName) {
     return NextResponse.json({ error: "Missing 'dir' or 'name'" }, { status: 400 });
   }
-  if (name.includes("/") || name.includes("\\") || name.includes("..")) {
-    return NextResponse.json({ error: "Invalid file name" }, { status: 400 });
+
+  // This route only ever writes the baked HTML template, so a Markdown name
+  // is rejected rather than quietly turned into "notes.md.html".
+  if (/\.(md|markdown)$/i.test(rawName)) {
+    return NextResponse.json({ error: "Only .html files can be created" }, { status: 400 });
   }
 
   try {
-    const finalName = name.toLowerCase().endsWith(".html") ? name : `${name}.html`;
+    // `.htm` counts as already-extensioned so it isn't turned into `a.htm.html`.
+    const finalName = /\.html?$/i.test(rawName) ? rawName : `${rawName}.html`;
+    if (finalName.includes("/") || finalName.includes("\\") || finalName.includes("..")) {
+      return NextResponse.json({ error: "Invalid file name" }, { status: 400 });
+    }
     const target = path.join(dir, finalName);
     const { absolute } = await resolveSafePath(target);
 
@@ -162,7 +171,7 @@ export async function POST(req: Request) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
 
-    const baseName = path.basename(absolute, ".html");
+    const baseName = path.basename(absolute).replace(/\.html?$/i, "");
     const initialContent = `<h1>${escapeHtml(baseName)}</h1>\n<p></p>`;
     const fullHtml = wrapContent(initialContent, baseName, await resolveTheme());
     await writeFile(absolute, fullHtml, "utf8");
@@ -183,4 +192,19 @@ function escapeHtml(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+// Rename a file in place (content untouched).
+export async function PATCH(req: Request) {
+  let body: { path?: string; name?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+  const result = await renameNode(body.path ?? "", body.name ?? "", "file");
+  if (!result.ok) {
+    return NextResponse.json({ error: result.error }, { status: result.status });
+  }
+  return NextResponse.json({ ok: true, path: result.path });
 }

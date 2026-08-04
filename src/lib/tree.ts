@@ -7,6 +7,10 @@ export type TreeEntry = {
   path: string;
   type: "file" | "directory";
   children?: TreeEntry[];
+  // Directory that readdir reported as containing nothing at all. Set only
+  // for directories the walk actually listed, so an unreadable or unvisited
+  // one is never mistaken for empty. See pruneAndSort.
+  empty?: boolean;
 };
 
 const EDITABLE_FILE_RE = /\.(html?|md|markdown)$/i;
@@ -23,25 +27,34 @@ export type WalkResult = { entries: TreeEntry[]; truncated: boolean };
 
 export async function walkTree(dir: string): Promise<WalkResult> {
   const rootChildren: TreeEntry[] = [];
-  const queue: { dir: string; children: TreeEntry[] }[] = [{ dir, children: rootChildren }];
+  // `node` is the entry the listing belongs to (null for the root itself), so
+  // the walk can mark it empty once its listing comes back.
+  const queue: { dir: string; children: TreeEntry[]; node: TreeEntry | null }[] = [
+    { dir, children: rootChildren, node: null },
+  ];
   let scanned = 0;
   while (queue.length > 0 && scanned < MAX_SCANNED_ENTRIES) {
     const batch = queue.splice(0, READDIR_CONCURRENCY);
     const listings = await Promise.all(
       // An unreadable subdirectory (permissions, vanished network mount entry)
-      // drops out of the tree instead of failing the whole walk.
-      batch.map((item) => readdir(item.dir, { withFileTypes: true }).catch(() => [])),
+      // drops out of the tree instead of failing the whole walk. `null`
+      // distinguishes that failure from a directory that really is empty.
+      batch.map((item) => readdir(item.dir, { withFileTypes: true }).catch(() => null)),
     );
     for (let i = 0; i < batch.length; i++) {
       const item = batch[i];
-      scanned += listings[i].length;
-      for (const entry of listings[i]) {
+      const listing = listings[i];
+      if (listing === null) continue;
+      scanned += listing.length;
+      if (listing.length === 0 && item.node) item.node.empty = true;
+      for (const entry of listing) {
         if (entry.name.startsWith(".") || IGNORED_DIRS.has(entry.name)) continue;
         const full = path.join(item.dir, entry.name);
         if (entry.isDirectory()) {
           const children: TreeEntry[] = [];
-          item.children.push({ name: entry.name, path: full, type: "directory", children });
-          queue.push({ dir: full, children });
+          const node: TreeEntry = { name: entry.name, path: full, type: "directory", children };
+          item.children.push(node);
+          queue.push({ dir: full, children, node });
         } else if (entry.isFile() && EDITABLE_FILE_RE.test(entry.name)) {
           item.children.push({ name: entry.name, path: full, type: "file" });
         }
@@ -59,13 +72,15 @@ export async function walkTree(dir: string): Promise<WalkResult> {
 
 // Directories that ended up with no editable descendants disappear; siblings
 // sort directories-first, then by name — same shape the old recursive walk
-// produced.
+// produced. Directories that are genuinely empty on disk are the exception:
+// they stay, so a folder created from the sidebar doesn't vanish the moment
+// it is made (and an intentionally empty folder keeps its place on reload).
 function pruneAndSort(entries: TreeEntry[]): TreeEntry[] {
   const result: TreeEntry[] = [];
   for (const e of entries) {
     if (e.type === "directory") {
       const children = pruneAndSort(e.children ?? []);
-      if (children.length === 0) continue;
+      if (children.length === 0 && !e.empty) continue;
       result.push({ ...e, children });
     } else {
       result.push(e);

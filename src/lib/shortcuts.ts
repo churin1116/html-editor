@@ -295,6 +295,33 @@ export function setFileAliasInTree(
   return { tree: walk(tree), ok };
 }
 
+// Follows a rename made elsewhere in the app: every shortcut pointing at
+// `oldPath` (or at something inside it, when a directory was renamed) is
+// repointed at the new location, so renaming from the sidebar doesn't leave
+// shortcuts dangling. Aliases are kept — the display name is the user's, not
+// the file's.
+export function repathFilesInTree(
+  tree: ShortcutNode[],
+  oldPath: string,
+  newPath: string,
+): { tree: ShortcutNode[]; changed: number } {
+  let changed = 0;
+  const walk = (nodes: ShortcutNode[]): ShortcutNode[] =>
+    nodes.map((n) => {
+      if (n.type === "folder") return { ...n, children: walk(n.children) };
+      if (n.path === oldPath) {
+        changed++;
+        return { ...n, path: newPath };
+      }
+      if (n.path.startsWith(`${oldPath}/`)) {
+        changed++;
+        return { ...n, path: newPath + n.path.slice(oldPath.length) };
+      }
+      return n;
+    });
+  return { tree: walk(tree), changed };
+}
+
 export type MoveSource = { kind: "file"; path: string } | { kind: "folder"; id: string };
 
 export function moveNodeInTree(
