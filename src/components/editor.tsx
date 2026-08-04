@@ -18,7 +18,7 @@ import {
   Underline,
   Var_,
 } from "@/lib/inline-marks";
-import { fetchLinkCardMeta, isSingleUrl } from "@/lib/link-card";
+import { type LinkCardMeta, fetchLinkCardMeta, isSingleUrl } from "@/lib/link-card";
 import { LinkCard } from "@/lib/link-card-node";
 import { Aside, Div, Figcaption, Figure, ParagraphClass, Span } from "@/lib/passthrough-nodes";
 import { Rp, Rt, Ruby } from "@/lib/ruby-nodes";
@@ -33,6 +33,7 @@ import {
   stripImageExtension,
   uploadImage,
 } from "@/lib/upload-image";
+import { Extension } from "@tiptap/core";
 import { Dropcursor } from "@tiptap/extension-dropcursor";
 import { Image } from "@tiptap/extension-image";
 import { Link } from "@tiptap/extension-link";
@@ -46,6 +47,12 @@ import { EditorContent, type Editor as TiptapEditor, useEditor } from "@tiptap/r
 import { StarterKit } from "@tiptap/starter-kit";
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+
+// Replacing a toast.loading() by id keeps whatever options the original had —
+// including its `duration: Infinity` — so every such update has to state a
+// duration of its own (and a type other than "loading") or the message never
+// goes away.
+const TOAST_MS = 4000;
 
 export function Editor({
   content,
@@ -164,6 +171,7 @@ export function Editor({
       // wins on priority, not on order — but keeping it adjacent documents
       // the relationship.
       LinkCard,
+      LinkCardOnEnter,
       Div,
       Aside,
       Figure,
@@ -679,7 +687,7 @@ async function uploadAndInsert(view: EditorView, files: File[], at?: number) {
         width,
       });
       if (!imageNode) {
-        toast.error("Image node type not registered", { id: toastId });
+        toast.error("Image node type not registered", { id: toastId, duration: TOAST_MS });
         continue;
       }
 
@@ -701,10 +709,10 @@ async function uploadAndInsert(view: EditorView, files: File[], at?: number) {
       const pos = at ?? view.state.selection.from;
       const tr = view.state.tr.insert(pos, nodeToInsert);
       view.dispatch(tr);
-      toast.success("Image uploaded", { id: toastId });
+      toast.success("Image uploaded", { id: toastId, duration: TOAST_MS });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Upload failed";
-      toast.error(message, { id: toastId });
+      toast.error(message, { id: toastId, duration: TOAST_MS });
     }
   }
 }
@@ -714,18 +722,107 @@ async function uploadAndInsert(view: EditorView, files: File[], at?: number) {
 // save could catch mid-flight — and the paste is one undo step, not two.
 // A page that yields nothing still becomes a card showing its URL.
 async function insertLinkCardAt(view: EditorView, url: string) {
-  const toastId = toast.loading("リンク情報を取得中…");
-  const meta = await fetchLinkCardMeta(url);
-  if (meta.title) toast.dismiss(toastId);
-  else toast("リンク情報を取得できませんでした（URL のみのカードにします）", { id: toastId });
+  const meta = await fetchLinkCardMetaWithToast(url);
   // The fetch takes seconds; the file may have been closed or switched in the
   // meantime, which tears this view down.
   if (view.isDestroyed) return;
-  // The document may have moved on too; drop the card at the caret rather
-  // than at a remembered position.
-  const type = view.state.schema.nodes.linkCard;
-  if (!type) return;
-  const node = type.create(meta);
-  view.dispatch(view.state.tr.replaceSelectionWith(node).scrollIntoView());
+  dispatchLinkCard(view, meta, null);
+}
+
+// Enter on a line that holds nothing but a URL turns it into a card, the
+// typed counterpart of pasting one. The paragraph is left alone while the
+// fetch runs (so the text is never lost if it fails) and is looked up again
+// afterwards by content, since editing elsewhere may have shifted it.
+async function convertParagraphToCard(view: EditorView, hintPos: number, url: string) {
+  const meta = await fetchLinkCardMetaWithToast(url);
+  if (view.isDestroyed) return;
+  const range = findParagraphWithText(view.state.doc, url, hintPos);
+  // The line changed while we waited — leave whatever is there now alone.
+  if (!range) return;
+  dispatchLinkCard(view, meta, range);
+}
+
+async function fetchLinkCardMetaWithToast(url: string) {
+  const toastId = toast.loading("リンク情報を取得中…");
+  const meta = await fetchLinkCardMeta(url);
+  // Dismissed and re-raised rather than updated in place: sonner merges an
+  // update into the existing toast, so the loading toast's `type: "loading"`
+  // (which disables the auto-dismiss timer outright) would survive and the
+  // message would sit there with a spinner until clicked.
+  toast.dismiss(toastId);
+  if (!meta.title) {
+    toast("リンク情報を取得できませんでした（URL のみのカードにします）", { duration: TOAST_MS });
+  }
+  return meta;
+}
+
+// Finds the paragraph whose whole text is `text`, preferring the one nearest
+// to where it was when the fetch started.
+function findParagraphWithText(
+  doc: EditorView["state"]["doc"],
+  text: string,
+  hintPos: number,
+): { from: number; to: number } | null {
+  let best: { from: number; to: number } | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  doc.descendants((node, pos) => {
+    if (node.type.name !== "paragraph") return true;
+    if (node.textContent.trim() !== text) return false;
+    const distance = Math.abs(pos - hintPos);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = { from: pos, to: pos + node.nodeSize };
+    }
+    return false;
+  });
+  return best;
+}
+
+// Replaces `range` (or the selection) with the card. A block atom at the very
+// end of the document leaves nowhere to put the caret, so a paragraph is
+// appended when the card would otherwise be the last node.
+function dispatchLinkCard(
+  view: EditorView,
+  meta: LinkCardMeta,
+  range: { from: number; to: number } | null,
+) {
+  const cardType = view.state.schema.nodes.linkCard;
+  if (!cardType) return;
+  const card = cardType.create(meta);
+  let tr = range
+    ? view.state.tr.replaceWith(range.from, range.to, card)
+    : view.state.tr.replaceSelectionWith(card);
+  const paragraphType = view.state.schema.nodes.paragraph;
+  if (paragraphType && tr.doc.lastChild?.type.name === "linkCard") {
+    tr = tr.insert(tr.doc.content.size, paragraphType.create());
+  }
+  view.dispatch(tr.scrollIntoView());
   view.focus();
 }
+
+// Pressing Enter on a line that holds nothing but a URL files it as a card —
+// the typed counterpart of pasting one, with the same rule (the whole line,
+// and only the line, has to be the URL). Enter anywhere else is untouched, so
+// a URL written mid-sentence stays text.
+const LinkCardOnEnter = Extension.create({
+  name: "linkCardOnEnter",
+  addKeyboardShortcuts() {
+    return {
+      Enter: ({ editor }) => {
+        const { selection } = editor.state;
+        if (!selection.empty) return false;
+        const { $from } = selection;
+        const parent = $from.parent;
+        if (parent.type.name !== "paragraph") return false;
+        // Only once the caret has reached the end of the line — Enter in the
+        // middle of a URL is still a line break.
+        if ($from.parentOffset !== parent.content.size) return false;
+        const url = parent.textContent.trim();
+        if (!isSingleUrl(url)) return false;
+        if (!editor.state.schema.nodes.linkCard) return false;
+        void convertParagraphToCard(editor.view, $from.before(), url);
+        return true;
+      },
+    };
+  },
+});
