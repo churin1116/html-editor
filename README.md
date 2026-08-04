@@ -16,10 +16,15 @@ Built because viewing/editing personal Markdown notes from a code editor felt he
 - **Markdown typing shortcuts** — In both HTML editing modes, markdown markers convert to HTML as you type: `#`–`######` + space → headings, `-` / `1.` → lists, `>` → blockquote, `---` + Enter → horizontal rule, ` ``` ` + Enter → code block, and inline `**bold**` / `*italic*` / `` `code` `` / `~~strike~~`. (The Markdown editor is Markdown already.)
 - **Absolute paths via whitelist** — Edit files anywhere on disk. Allowed roots are managed from the sidebar (or directly in `config/allowed-roots.json`); arbitrary paths are rejected by the API. Supports `~/...` paths.
 - **External-edit conflict detection** — Captures `mtime` on open and rejects writes that would clobber concurrent changes (e.g., from VS Code or `git pull`).
-- **New file creation** — Sidebar `+ New` button creates an `.html` file under the chosen root.
+- **New file / folder creation** — Hovering a folder row in the tree reveals "new file" and "new folder" icons next to the copy-path one; either opens an inline name field (VS Code-style) right under the folder. A new file is created as a themed, editor-ready `.html` and opens immediately (extension optional — `.html`/`.htm` respected); a new folder is created empty and stays visible in the tree. Leaving the field empty and clicking away just dismisses the draft — a name you did type is committed on blur rather than thrown away, and a rejected name (duplicate, illegal characters) keeps the field open with the text intact. `Esc` discards.
 - **Workspaces** — When two or more roots are registered, a switcher at the top of the sidebar scopes the tree to a single root (VS Code-style project view) or shows all. The choice persists across reloads, and `?ws=<path-or-label>` in the URL pins a workspace per tab/bookmark.
 - **Name search** — A borderless search box in the sidebar footer finds files and folders by *name* (contents are never searched, and a term that only appears in the surrounding path doesn't match). Enter opens the best match — files open in the editor, folders expand — and the sidebar scrolls to it, unfolding parents and switching workspace as needed. Ambiguous queries float their candidates above the box (↑/↓ + Enter). Slash-shaped queries split into folder + name, so `reviews/index`, `~/notes/todo.md` and full absolute paths all work.
 - **Copy path** — Hovering any tree row (file, folder, or shortcut) reveals a copy icon at its right edge that puts the row's absolute path on the clipboard without opening the file or toggling the folder.
+- **Move to Trash** — The last item of a tree row's context menu, "ゴミ箱に移動", opens an AlertDialog and does nothing until it is confirmed — the menu item itself never deletes. Confirming moves the file or folder (contents included) to `~/.Trash`; nothing is ever unlinked, so it sits there until the Trash is emptied and can be dragged back out of it. (Finder's *Put Back* stays greyed out — that needs restore info only Finder itself writes.) An entry on another volume (a network mount, an external disk) can't be renamed into the Trash, and the delete is refused rather than turned into an unrecoverable removal.
+- **Rename on disk** — Right-clicking a tree row offers "名前を変更" above "パスをコピー": the row turns into an inline field (extension pre-excluded from the selection) and the file or folder is renamed in place. Inline name fields are IME-aware: while Japanese conversion is in progress, Enter confirms the candidate and the field stays open — only an Enter on settled text commits the name. A name typed without an extension keeps the current one, so nothing can be renamed out of the tree. Shortcuts pointing at the renamed path — including ones inside a renamed folder — follow it, and if the renamed file is the one being edited, the open buffer is repointed rather than reloaded, so unsaved edits survive. (Shortcut rows keep their own "表示名を変更", which only sets a display alias.)
+- **Drag and drop to move** — Tree rows drag onto any folder row to move the real file or folder there (dropping on a file means "into the folder it sits in", as in VS Code); hovering a collapsed folder mid-drag opens it, and while a drag is in progress the empty space below the tree becomes a drop zone for the workspace root, so an entry can be moved back to the top level. Moves that would do nothing (same folder) or break the tree (a folder into its own subtree) are refused by the cursor, a name collision reports instead of overwriting, and — as with rename — shortcuts follow the move and the open buffer keeps its unsaved edits.
+- **Multi-row selection** — Ctrl/Cmd-click marks rows and Shift-click marks a range; dragging any marked row moves the whole set in one go, each entry reported separately so one collision doesn't hide the rest. A plain click clears the marks (it is still "open this file" / "toggle this folder"). Marking is independent of which file is open in the editor.
+- **Import from Finder** — Dropping files from the OS onto a folder row (or the root drop zone) copies them in. Only `.html`/`.md` are accepted, existing files are never overwritten, and each refusal is reported by name; dropped folders are not imported.
 - **Sidebar state persistence** — The active workspace and every fold (roots, tree directories, shortcut folders) are stored in cookies, and the sidebar — roots, trees, shortcuts — is rendered server-side, so the first paint already shows the exact last state with no flash or refetch. Newly added roots start with all folders collapsed; folders you open stay open across reloads.
 
 ## Quick start
@@ -42,7 +47,7 @@ Requires Node.js 20+ and pnpm 9+.
 ### First 60 seconds
 
 1. **Add a root** — sidebar "+ add" → give any folder a label and an absolute path (`~/notes` works). Its `.html`/`.md` files appear as a tree.
-2. **Click a file and type** — WYSIWYG editing, straight onto the rendered page. `⌘S` saves. New file: hover a root → `+`.
+2. **Click a file and type** — WYSIWYG editing, straight onto the rendered page. `⌘S` saves. New file: hover a folder → the file+ icon → type a name.
 3. **Everything saved is a normal `.html`** — self-contained ([Chameleon theme baked in](#theme-baking)), opens in any browser via `file://`, offline, forever. `.md` files stay Markdown on disk.
 4. **Theme** — switch light/dark/etc. per-viewer with the [Chameleon Chrome extension](https://github.com/churin1116/html-chameleon) (or `localStorage`); files don't need re-saving. The gear button (sidebar footer) holds editor settings such as [theme auto-update](#theme-baking).
 
@@ -320,9 +325,13 @@ src/
 │   └── api/
 │       ├── roots/route.ts    GET allowed roots
 │       ├── tree/route.ts     GET file tree under a root
-│       └── file/route.ts     GET / PUT / POST file ops
+│       ├── move/route.ts     POST move files/folders into a directory
+│       ├── import/route.ts   POST copy dropped OS files into a directory
+│       ├── trash/route.ts    POST move a file/folder to ~/.Trash
+│       ├── dir/route.ts      POST create / PATCH rename a folder
+│       └── file/route.ts     GET / PUT / POST / PATCH file ops
 ├── components/
-│   ├── sidebar.tsx           Tree + "+ New" button
+│   ├── sidebar.tsx           Tree, shortcuts, search, new file/folder row
 │   ├── editor.tsx            TipTap editor + toolbar (HTML)
 │   └── md-editor.tsx         CodeMirror Markdown editor
 └── lib/

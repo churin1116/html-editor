@@ -6,6 +6,7 @@ import { HtmlSource } from "@/components/html-source";
 import { MdEditor } from "@/components/md-editor";
 import { Sidebar, type SidebarCollapse } from "@/components/sidebar";
 import type { AllowedRoot } from "@/lib/allowed-roots";
+import { confirmDialog } from "@/lib/dialogs";
 import {
   type ActionId,
   type EditorMode,
@@ -128,6 +129,38 @@ export function EditorShell({
       document.cookie = `${LAST_PATH_COOKIE}=; path=/; max-age=0; SameSite=Lax`;
     }
   }, [selected]);
+
+  // Opening another file replaces the editor contents, so unsaved edits would
+  // be gone with no way back. Every route into a different file goes through
+  // this (sidebar click, search hit, a freshly created file opening itself),
+  // so the confirmation lives here rather than at each call site. Clearing the
+  // selection (`null`, e.g. the open file's shortcut was removed) keeps the
+  // old behavior — the user just confirmed that removal.
+  const handleSelect = useCallback(
+    async (p: string | null) => {
+      if (p !== null && dirty && file && p !== file.path) {
+        const ok = await confirmDialog({
+          title: "保存していない変更があります",
+          description: `「${file.title || file.path.split("/").pop()}」の編集内容は破棄されます。`,
+          confirmLabel: "破棄して開く",
+          destructive: true,
+        });
+        if (!ok) return;
+      }
+      setSelected(p);
+    },
+    [dirty, file],
+  );
+
+  // A rename from the sidebar moves the same bytes to a new path, so the open
+  // buffer is repointed rather than reloaded — unsaved edits survive, and a
+  // later ⌘S writes to the new file instead of recreating the old one.
+  const handleRenamed = useCallback((oldPath: string, newPath: string) => {
+    const remap = (p: string) =>
+      p === oldPath ? newPath : p.startsWith(`${oldPath}/`) ? newPath + p.slice(oldPath.length) : p;
+    setSelected((prev) => (prev === null ? prev : remap(prev)));
+    setFile((prev) => (prev === null ? prev : { ...prev, path: remap(prev.path) }));
+  }, []);
 
   const loadFile = useCallback(async (p: string) => {
     try {
@@ -326,11 +359,12 @@ export function EditorShell({
         <div className="flex-1 overflow-hidden">
           <Sidebar
             selectedPath={selected}
-            onSelect={setSelected}
+            onSelect={handleSelect}
             refreshKey={refreshKey}
             mode={toolbarMode}
             onApply={applyAction}
             onFolderCssChanged={refreshPreviewCss}
+            onRenamed={handleRenamed}
             initialRoots={initialRoots}
             initialTrees={initialTrees}
             initialRootErrors={initialRootErrors}

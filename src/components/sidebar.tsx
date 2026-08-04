@@ -29,10 +29,23 @@ type ShortcutFolderNode = {
 };
 type ShortcutNode = ShortcutFileNode | ShortcutFolderNode;
 type AddFormTarget = { parentId: string | null; kind: "file" | "folder" };
+// Inline "new HTML file / new folder" draft row inside a tree directory
+// (VS Code-style). `draft` names the directory the open row belongs to and
+// what it creates; `onSubmit` resolves to an error message to keep the row
+// open, or null on success.
+type NewNodeKind = "file" | "folder";
+type NewNodeDraft = { dir: string; kind: NewNodeKind };
+type NewNodeAPI = {
+  draft: NewNodeDraft | null;
+  onStart: (dirPath: string, kind: NewNodeKind) => void;
+  onSubmit: (dirPath: string, kind: NewNodeKind, name: string) => Promise<string | null>;
+  onCancel: () => void;
+};
 type MoveSource = { kind: "file"; path: string } | { kind: "folder"; id: string };
 type DropTargetId = string | "root";
 
 const DRAG_MIME = "application/x-shortcut-move";
+const TREE_DRAG_MIME = "application/x-tree-move";
 // Legacy keys — sidebar UI state now lives in cookies so the server can
 // render the correct state on first paint. Old localStorage values migrate
 // on mount.
@@ -108,6 +121,17 @@ function writeCollapseCookie(state: SidebarCollapse) {
   document.cookie = `${COLLAPSE_COOKIE}=${encoded}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`;
 }
 
+// Which registered root a tree directory belongs to — the longest matching
+// prefix, so a root nested inside another still resolves to itself.
+function enclosingRootPath(roots: AllowedRoot[], dirPath: string): string | null {
+  let best: string | null = null;
+  for (const r of roots) {
+    if (dirPath !== r.path && !dirPath.startsWith(`${r.path}/`)) continue;
+    if (best === null || r.path.length > best.length) best = r.path;
+  }
+  return best;
+}
+
 function findFolderById(nodes: ShortcutNode[], id: string): ShortcutFolderNode | null {
   for (const n of nodes) {
     if (n.type !== "folder") continue;
@@ -178,6 +202,12 @@ type RenameAPI = {
 };
 
 type ShortcutContextMenuOpener = (x: number, y: number, path: string, alias?: string) => void;
+type TreeContextMenuOpener = (
+  x: number,
+  y: number,
+  path: string,
+  nodeType: "file" | "directory",
+) => void;
 type TreeEntry = {
   name: string;
   path: string;
@@ -190,7 +220,108 @@ type ContextMenuState = {
   path: string;
   source: "root" | "shortcut";
   alias?: string;
+  // Tree rows only ("root"): what the row points at, so the menu can offer the
+  // right rename (a file and a folder go to different endpoints).
+  nodeType?: "file" | "directory";
 };
+
+// Renaming an actual file/folder on disk from a tree row — distinct from
+// RenameAPI above, which only changes a shortcut's display alias.
+type TreeRenameAPI = {
+  path: string | null;
+  onSubmit: (path: string, kind: NewNodeKind, name: string) => Promise<string | null>;
+  onCancel: () => void;
+};
+
+// Dragging tree rows moves the real file/folder on disk. Kept separate from
+// the shortcut DnD above (which only reorders bookmarks) — including its drag
+// MIME type, so neither tree can accept the other's payload.
+type TreeDragSource = { path: string; type: "file" | "directory" };
+type TreeDnD = {
+  // Everything this drag carries: the row that was grabbed, or the whole
+  // marked set when the grabbed row is part of it.
+  dragging: TreeDragSource[];
+  // Absolute path of the directory currently under the pointer, if droppable.
+  overDir: string | null;
+  onDragStart: (e: React.DragEvent, source: TreeDragSource) => void;
+  onDragEnd: () => void;
+  // Both dragenter and dragover must preventDefault for the element to accept
+  // a drop — a pointer that stops right after entering a row emits no further
+  // dragover, and the drop would be refused. Same handler for both.
+  onDragEnter: (e: React.DragEvent, targetDir: string) => void;
+  onDragOver: (e: React.DragEvent, targetDir: string) => void;
+  onDragLeave: (targetDir: string) => void;
+  onDrop: (e: React.DragEvent, targetDir: string) => void;
+  // Hovering a collapsed folder mid-drag opens it after a beat, so nested
+  // destinations are reachable without dropping first (as in VS Code).
+  onHoverFolder: (dirPath: string, isOpen: boolean) => void;
+};
+
+const HOVER_EXPAND_MS = 600;
+
+// Ctrl/Cmd-click marks rows; a marked row drags the whole set. Kept apart
+// from `selectedPath`, which means "the file open in the editor".
+type TreeMarksAPI = {
+  paths: string[];
+  // Returns true when the click was a marking gesture and the row's normal
+  // action (open the file / toggle the folder) must not run.
+  onRowClick: (e: React.MouseEvent, entry: TreeDragSource) => boolean;
+};
+
+// The import API reports per-file refusals in English (its own contract); the
+// sidebar shows them in the language of the rest of its messages.
+const IMPORT_ERROR_JA: Record<string, string> = {
+  "Only .html and .md files can be imported": ".html / .md のみ取り込めます",
+  "A file with that name already exists": "同じ名前のファイルがすでにあります",
+  "File is too large": "ファイルが大きすぎます（上限 10MB）",
+  "Invalid file name": "ファイル名が不正です",
+};
+
+function importErrorText(error: string): string {
+  return IMPORT_ERROR_JA[error] ?? error;
+}
+
+function parentDir(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i > 0 ? p.slice(0, i) : "/";
+}
+
+// A move is pointless (already there) or impossible (a folder into itself or
+// its own subtree). Only entries that fail this are dropped from the payload;
+// the drop as a whole is refused when nothing is left.
+function isInvalidTreeDrop(source: TreeDragSource, targetDir: string): boolean {
+  if (parentDir(source.path) === targetDir) return true;
+  if (source.type !== "directory") return false;
+  return targetDir === source.path || targetDir.startsWith(`${source.path}/`);
+}
+
+function movableInto(sources: TreeDragSource[], targetDir: string): TreeDragSource[] {
+  return sources.filter((s) => !isInvalidTreeDrop(s, targetDir));
+}
+
+// Dragging a folder together with something inside it would move the child
+// twice — the second move would look for a path that no longer exists.
+function dropNested(sources: TreeDragSource[]): TreeDragSource[] {
+  const dirs = sources.filter((s) => s.type === "directory").map((s) => s.path);
+  return sources.filter((s) => !dirs.some((d) => d !== s.path && s.path.startsWith(`${d}/`)));
+}
+
+// Rows in the order they appear on screen — what Shift-click ranges over.
+function flattenVisibleRows(
+  entries: TreeEntry[],
+  collapsedDirs: Record<string, boolean>,
+  defaultCollapsed: boolean,
+  out: string[],
+): void {
+  for (const entry of entries) {
+    out.push(entry.path);
+    if (entry.type !== "directory") continue;
+    const explicit = collapsedDirs[entry.path];
+    const open = explicit === undefined ? !defaultCollapsed : !explicit;
+    if (open && entry.children)
+      flattenVisibleRows(entry.children, collapsedDirs, defaultCollapsed, out);
+  }
+}
 
 type FolderContextMenuState = {
   x: number;
@@ -209,6 +340,7 @@ export function Sidebar({
   mode,
   onApply,
   onFolderCssChanged,
+  onRenamed,
   initialRoots,
   initialTrees,
   initialRootErrors,
@@ -226,6 +358,10 @@ export function Sidebar({
   // EditorShell uses this to refresh just the open file's previewCss without
   // disturbing in-progress edits.
   onFolderCssChanged?: () => void;
+  // Fired after a tree row was renamed on disk. EditorShell repoints the open
+  // file at the new path instead of reloading it, so unsaved edits survive a
+  // rename of the file (or of a folder above it).
+  onRenamed?: (oldPath: string, newPath: string) => void;
   // Server-rendered initial data: the first paint shows the real sidebar
   // instead of flashing the empty state while the client refetches.
   initialRoots: AllowedRoot[];
@@ -259,6 +395,8 @@ export function Sidebar({
   const [dirDefaultClosed, setDirDefaultClosed] = useState<string[]>(
     initialCollapse.dirDefaultClosed,
   );
+  // The one open inline draft row, if any (see NewNodeAPI).
+  const [newNodeDraft, setNewNodeDraft] = useState<NewNodeDraft | null>(null);
   const [dragOverTarget, setDragOverTarget] = useState<DropTargetId | null>(null);
   const [dragSource, setDragSource] = useState<MoveSource | null>(null);
   // Row the search box asked to bring into view. A fresh object per request so
@@ -317,9 +455,9 @@ export function Sidebar({
     setCollapsedDirs((prev) => ({ ...prev, [dirPath]: collapse }));
   }, []);
 
-  const openContextMenu = useCallback((x: number, y: number, path: string) => {
+  const openContextMenu = useCallback<TreeContextMenuOpener>((x, y, path, nodeType) => {
     setFolderContextMenu(null);
-    setContextMenu({ x, y, path, source: "root" });
+    setContextMenu({ x, y, path, source: "root", nodeType });
   }, []);
   const openShortcutContextMenu = useCallback(
     (x: number, y: number, path: string, alias?: string) => {
@@ -621,6 +759,446 @@ export function Sidebar({
     setAddFormFor({ parentId, kind });
   }, []);
 
+  // The draft row is rendered among the directory's children, so the directory
+  // has to be open for it to be visible.
+  const startNewNode = useCallback((dirPath: string, kind: NewNodeKind) => {
+    setCollapsedDirs((prev) => (prev[dirPath] === false ? prev : { ...prev, [dirPath]: false }));
+    setNewNodeDraft({ dir: dirPath, kind });
+  }, []);
+
+  const cancelNewNode = useCallback(() => setNewNodeDraft(null), []);
+
+  const submitNewNode = useCallback(
+    async (dirPath: string, kind: NewNodeKind, rawName: string): Promise<string | null> => {
+      const isFile = kind === "file";
+      const name = rawName.trim();
+      if (!name) return isFile ? "ファイル名を入力してください" : "フォルダ名を入力してください";
+      if (name.includes("/") || name.includes("\\") || name.includes(".."))
+        return "名前に / \\ .. は使えません";
+      // The create API only writes the baked HTML template; a .md name would
+      // otherwise silently become "notes.md.html".
+      if (isFile && /\.(md|markdown)$/i.test(name)) return "新規作成できるのは HTML のみです";
+      try {
+        const res = await fetch(isFile ? "/api/file" : "/api/dir", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ dir: dirPath, name }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          if (res.status === 409)
+            return isFile
+              ? "同じ名前のファイルがすでにあります"
+              : "同じ名前のフォルダがすでにあります";
+          return data.error ?? `HTTP ${res.status}`;
+        }
+        // Only close the row this call belongs to: a blur-commit can land
+        // after the click that opened a draft somewhere else, and that one
+        // must survive.
+        setNewNodeDraft((prev) =>
+          prev && prev.dir === dirPath && prev.kind === kind ? null : prev,
+        );
+        const rootPath = enclosingRootPath(roots, dirPath);
+        if (rootPath) await reloadTree(rootPath);
+        // A new file opens in the editor; a new folder can't, so it is just
+        // expanded (ready for the next thing put in it) and scrolled to.
+        if (isFile) onSelect(data.path);
+        else setCollapsedDirs((prev) => ({ ...prev, [data.path]: false }));
+        setReveal({ path: data.path });
+        return null;
+      } catch (e) {
+        return String(e);
+      }
+    },
+    [roots, reloadTree, onSelect],
+  );
+
+  const [renamingPath, setRenamingPath] = useState<string | null>(null);
+  const startTreeRename = useCallback((path: string) => {
+    setContextMenu(null);
+    setNewNodeDraft(null);
+    setRenamingPath(path);
+  }, []);
+  const cancelTreeRename = useCallback(() => setRenamingPath(null), []);
+
+  const submitTreeRename = useCallback(
+    async (targetPath: string, kind: NewNodeKind, rawName: string): Promise<string | null> => {
+      const name = rawName.trim();
+      const currentName = targetPath.split("/").pop() ?? "";
+      if (!name) return "名前を入力してください";
+      if (name.includes("/") || name.includes("\\") || name.includes(".."))
+        return "名前に / \\ .. は使えません";
+      if (name === currentName) {
+        setRenamingPath(null);
+        return null;
+      }
+      try {
+        const res = await fetch(kind === "file" ? "/api/file" : "/api/dir", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: targetPath, name }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          if (res.status === 409) return "同じ名前のファイル／フォルダがすでにあります";
+          return data.error ?? `HTTP ${res.status}`;
+        }
+        setRenamingPath((prev) => (prev === targetPath ? null : prev));
+        const rootPath = enclosingRootPath(roots, targetPath);
+        if (rootPath) await reloadTree(rootPath);
+        // Carry over what the sidebar tracked by path: the open file (kept as
+        // an unsaved buffer if it was dirty) and this row's collapse state.
+        onRenamed?.(targetPath, data.path);
+        if (kind === "folder") {
+          setCollapsedDirs((prev) => {
+            if (!(targetPath in prev)) return prev;
+            const { [targetPath]: was, ...rest } = prev;
+            return { ...rest, [data.path]: was };
+          });
+        }
+        // Shortcuts pointing at the renamed path are repathed server-side.
+        await fetchShortcuts();
+        setReveal({ path: data.path });
+        return null;
+      } catch (e) {
+        return String(e);
+      }
+    },
+    [roots, reloadTree, fetchShortcuts, onRenamed],
+  );
+
+  // Search runs over what is already loaded — the fetched trees plus the
+  // shortcut list — so a lookup never hits the disk or the network.
+  const searchIndex = useMemo(() => buildSearchIndex(trees, shortcutTree), [trees, shortcutTree]);
+
+  // Marks are paths; drop the ones that stopped existing (moved, renamed or
+  // deleted elsewhere) so a later drag can't act on them.
+  useEffect(() => {
+    setMarked((prev) => {
+      if (prev.length === 0) return prev;
+      const alive = new Set(searchIndex.map((entry) => entry.path));
+      const next = prev.filter((p) => alive.has(p));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [searchIndex]);
+
+  const [treeDragging, setTreeDragging] = useState<TreeDragSource[]>([]);
+  const [treeDragOverDir, setTreeDragOverDir] = useState<string | null>(null);
+  // Rows marked with Ctrl/Cmd- or Shift-click, for dragging several at once.
+  const [marked, setMarked] = useState<string[]>([]);
+  const markAnchorRef = useRef<string | null>(null);
+
+  const moveTreeNodes = useCallback(
+    async (sources: TreeDragSource[], targetDir: string) => {
+      if (sources.length === 0) return;
+      try {
+        const res = await fetch("/api/move", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ paths: sources.map((s) => s.path), targetDir }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          toast.error(data.error ?? `HTTP ${res.status}`);
+          return;
+        }
+        const moved: { from: string; to: string }[] = data.results ?? [];
+        const errors: { path: string; error: string; status: number }[] = data.errors ?? [];
+        // Source and destination can sit under different roots (the ALL view
+        // shows several), so every affected tree is refreshed.
+        const affected = [
+          ...moved.map((m) => enclosingRootPath(roots, m.from)),
+          enclosingRootPath(roots, targetDir),
+        ].filter((r, i, all): r is string => r !== null && all.indexOf(r) === i);
+        await Promise.all(affected.map((r) => reloadTree(r)));
+        setCollapsedDirs((prev) => ({ ...prev, [targetDir]: false }));
+        for (const m of moved) onRenamed?.(m.from, m.to);
+        setMarked([]);
+        await fetchShortcuts();
+        if (moved.length > 0) setReveal({ path: moved[moved.length - 1].to });
+        for (const err of errors) {
+          const name = err.path.split("/").pop();
+          toast.error(
+            err.status === 409
+              ? `「${name}」は移動先に同じ名前があります`
+              : `「${name}」: ${err.error}`,
+          );
+        }
+      } catch (e) {
+        toast.error(String(e));
+      }
+    },
+    [roots, reloadTree, fetchShortcuts, onRenamed],
+  );
+
+  // Pending hover-expand: at most one folder is ever scheduled, and it is
+  // dropped as soon as the pointer moves on or the drag ends.
+  const hoverExpandRef = useRef<{ dir: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const cancelHoverExpand = useCallback(() => {
+    if (hoverExpandRef.current) clearTimeout(hoverExpandRef.current.timer);
+    hoverExpandRef.current = null;
+  }, []);
+  useEffect(() => cancelHoverExpand, [cancelHoverExpand]);
+
+  const onHoverFolder = useCallback(
+    (dirPath: string, isOpen: boolean) => {
+      if (hoverExpandRef.current?.dir === dirPath) return;
+      cancelHoverExpand();
+      if (isOpen) return;
+      const timer = setTimeout(() => {
+        hoverExpandRef.current = null;
+        setCollapsedDirs((prev) => ({ ...prev, [dirPath]: false }));
+      }, HOVER_EXPAND_MS);
+      hoverExpandRef.current = { dir: dirPath, timer };
+    },
+    [cancelHoverExpand],
+  );
+
+  // Copies files dropped from the OS into a tree directory.
+  const importFiles = useCallback(
+    async (files: File[], targetDir: string, hadDirectory: boolean) => {
+      if (hadDirectory) toast.error("フォルダの取り込みには未対応です");
+      if (files.length === 0) return;
+      const form = new FormData();
+      form.append("targetDir", targetDir);
+      for (const file of files) form.append("files", file);
+      try {
+        const res = await fetch("/api/import", { method: "POST", body: form });
+        const data = await res.json();
+        if (!res.ok) {
+          toast.error(data.error ?? `HTTP ${res.status}`);
+          return;
+        }
+        const imported: string[] = data.imported ?? [];
+        const errors: { name: string; error: string }[] = data.errors ?? [];
+        const rootPath = enclosingRootPath(roots, targetDir);
+        if (rootPath) await reloadTree(rootPath);
+        if (imported.length > 0) {
+          setCollapsedDirs((prev) => ({ ...prev, [targetDir]: false }));
+          setReveal({ path: imported[imported.length - 1] });
+          toast.success(`${imported.length} 件を取り込みました`);
+        }
+        for (const err of errors) toast.error(`「${err.name}」: ${importErrorText(err.error)}`);
+      } catch (e) {
+        toast.error(String(e));
+      }
+    },
+    [roots, reloadTree],
+  );
+
+  const acceptTreeDrag = (e: React.DragEvent, targetDir: string) => {
+    const isTreeMove = e.dataTransfer.types.includes(TREE_DRAG_MIME);
+    // Files dragged in from the OS land as a copy into the hovered directory.
+    const isExternal = !isTreeMove && e.dataTransfer.types.includes("Files");
+    if (!isTreeMove && !isExternal) return;
+    if (isTreeMove && movableInto(treeDragging, targetDir).length === 0) {
+      e.dataTransfer.dropEffect = "none";
+      return;
+    }
+    // preventDefault is what marks the element as a drop target.
+    e.preventDefault();
+    e.dataTransfer.dropEffect = isTreeMove ? "move" : "copy";
+    if (treeDragOverDir !== targetDir) setTreeDragOverDir(targetDir);
+  };
+
+  const treeDnd: TreeDnD = {
+    dragging: treeDragging,
+    overDir: treeDragOverDir,
+    onDragStart: (e, source) => {
+      // Grabbing a marked row drags the whole marked set; grabbing anything
+      // else drags just it, and drops the marks (as VS Code does).
+      let items: TreeDragSource[];
+      if (marked.includes(source.path) && marked.length > 1) {
+        const byPath = new Map(searchIndex.map((entry) => [entry.path, entry.type]));
+        items = dropNested(
+          marked.map((p) => ({ path: p, type: byPath.get(p) ?? "file" }) as TreeDragSource),
+        );
+      } else {
+        items = [source];
+        if (marked.length > 0) setMarked([]);
+      }
+      e.dataTransfer.setData(TREE_DRAG_MIME, JSON.stringify(items));
+      e.dataTransfer.effectAllowed = "move";
+      setTreeDragging(items);
+    },
+    onDragEnd: () => {
+      cancelHoverExpand();
+      setTreeDragging([]);
+      setTreeDragOverDir(null);
+    },
+    onHoverFolder,
+    onDragEnter: acceptTreeDrag,
+    onDragOver: acceptTreeDrag,
+    onDragLeave: (targetDir) => {
+      if (hoverExpandRef.current?.dir === targetDir) cancelHoverExpand();
+      setTreeDragOverDir((prev) => (prev === targetDir ? null : prev));
+    },
+    onDrop: (e, targetDir) => {
+      const isTreeMove = e.dataTransfer.types.includes(TREE_DRAG_MIME);
+      const isExternal = !isTreeMove && e.dataTransfer.types.includes("Files");
+      if (!isTreeMove && !isExternal) return;
+      e.preventDefault();
+      e.stopPropagation();
+      cancelHoverExpand();
+      setTreeDragOverDir(null);
+      setTreeDragging([]);
+
+      if (isExternal) {
+        // dataTransfer is emptied once this handler returns, so everything is
+        // read out synchronously before the upload starts.
+        const files = Array.from(e.dataTransfer.files ?? []);
+        const hadDirectory = Array.from(e.dataTransfer.items ?? []).some(
+          (item) => item.webkitGetAsEntry?.()?.isDirectory === true,
+        );
+        importFiles(
+          files.filter((f) => !hadDirectory || f.size > 0),
+          targetDir,
+          hadDirectory,
+        );
+        return;
+      }
+
+      const json = e.dataTransfer.getData(TREE_DRAG_MIME);
+      if (!json) return;
+      let sources: TreeDragSource[];
+      try {
+        sources = JSON.parse(json) as TreeDragSource[];
+      } catch {
+        return;
+      }
+      moveTreeNodes(movableInto(sources, targetDir), targetDir);
+    },
+  };
+
+  // Rows in screen order, for Shift-click ranges.
+  const visibleRowPaths = useMemo(() => {
+    const out: string[] = [];
+    for (const root of visibleRoots) {
+      flattenVisibleRows(
+        trees[root.path] ?? [],
+        collapsedDirs,
+        dirDefaultClosed.includes(root.path),
+        out,
+      );
+    }
+    return out;
+  }, [visibleRoots, trees, collapsedDirs, dirDefaultClosed]);
+
+  const onRowClick = useCallback(
+    (e: React.MouseEvent, entry: TreeDragSource): boolean => {
+      if (e.metaKey || e.ctrlKey) {
+        setMarked((prev) =>
+          prev.includes(entry.path) ? prev.filter((p) => p !== entry.path) : [...prev, entry.path],
+        );
+        markAnchorRef.current = entry.path;
+        return true;
+      }
+      if (e.shiftKey) {
+        const anchor = markAnchorRef.current ?? selectedPath;
+        const from = anchor ? visibleRowPaths.indexOf(anchor) : -1;
+        const to = visibleRowPaths.indexOf(entry.path);
+        if (from !== -1 && to !== -1) {
+          const [lo, hi] = from <= to ? [from, to] : [to, from];
+          setMarked(visibleRowPaths.slice(lo, hi + 1));
+        } else {
+          setMarked([entry.path]);
+          markAnchorRef.current = entry.path;
+        }
+        return true;
+      }
+      // A plain click is the normal action; it also clears any marks.
+      setMarked((prev) => (prev.length > 0 ? [] : prev));
+      markAnchorRef.current = entry.path;
+      return false;
+    },
+    [selectedPath, visibleRowPaths],
+  );
+
+  const treeMarks: TreeMarksAPI = { paths: marked, onRowClick };
+
+  // Deleting is gated on the AlertDialog: nothing is touched until it is
+  // confirmed, and what it does is move the entry to the Trash.
+  // What the "ゴミ箱に移動" menu item acts on: the whole marked set when the
+  // right-clicked row belongs to it, otherwise just that row. Nested entries
+  // are dropped — trashing a folder takes its children with it.
+  const trashTargetsFor = useCallback(
+    (rowPath: string, rowType: "file" | "directory"): TreeDragSource[] => {
+      if (!marked.includes(rowPath) || marked.length < 2) {
+        return [{ path: rowPath, type: rowType }];
+      }
+      const byPath = new Map(searchIndex.map((entry) => [entry.path, entry.type]));
+      return dropNested(
+        marked.map((p) => ({ path: p, type: byPath.get(p) ?? "file" }) as TreeDragSource),
+      );
+    },
+    [marked, searchIndex],
+  );
+
+  const trashTreeNodes = useCallback(
+    async (rowPath: string, rowType: "file" | "directory") => {
+      setContextMenu(null);
+      const targets = trashTargetsFor(rowPath, rowType);
+      const name = rowPath.split("/").pop() ?? rowPath;
+      const many = targets.length > 1;
+      const hasFolder = targets.some((t) => t.type === "directory");
+      const ok = await confirmDialog({
+        title: many ? `${targets.length} 件をゴミ箱に移動` : `「${name}」をゴミ箱に移動`,
+        description: `${hasFolder ? "フォルダは中のファイルもまとめて移動します。" : ""}ゴミ箱を空にするまで Finder から取り出せます。`,
+        confirmLabel: "ゴミ箱に移動",
+        destructive: true,
+      });
+      if (!ok) return;
+      try {
+        const res = await fetch("/api/trash", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ paths: targets.map((t) => t.path) }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          toast.error(data.error ?? `HTTP ${res.status}`);
+          return;
+        }
+        const trashed: { path: string }[] = data.results ?? [];
+        const errors: { path: string; error: string; code?: string }[] = data.errors ?? [];
+        const affected = [
+          ...trashed.map((t) => enclosingRootPath(roots, t.path)),
+          enclosingRootPath(roots, rowPath),
+        ].filter((r, i, all): r is string => r !== null && all.indexOf(r) === i);
+        await Promise.all(affected.map((r) => reloadTree(r)));
+        await fetchShortcuts();
+        setMarked([]);
+        // The editor can't stay on something that is gone.
+        if (
+          selectedPath &&
+          trashed.some((t) => selectedPath === t.path || selectedPath.startsWith(`${t.path}/`))
+        ) {
+          onSelect(null);
+        }
+        if (trashed.length > 0) {
+          toast.success(
+            trashed.length > 1
+              ? `${trashed.length} 件をゴミ箱に移動しました`
+              : `「${trashed[0].path.split("/").pop()}」をゴミ箱に移動しました`,
+          );
+        }
+        for (const err of errors) {
+          const failed = err.path.split("/").pop();
+          toast.error(
+            err.code === "cross-volume"
+              ? `「${failed}」は別ボリューム上のため、ゴミ箱に入れられません（Finder から削除してください）`
+              : err.code === "no-trash"
+                ? "この環境にはゴミ箱がありません"
+                : `「${failed}」: ${err.error}`,
+          );
+        }
+      } catch (e) {
+        toast.error(String(e));
+      }
+    },
+    [roots, reloadTree, fetchShortcuts, selectedPath, onSelect, trashTargetsFor],
+  );
+
   const handleSubmitAlias = useCallback(async (path: string, alias: string) => {
     setEditingAliasFor(null);
     const res = await fetch("/api/shortcuts", {
@@ -752,10 +1330,6 @@ export function Sidebar({
     },
     [selectedPath, onSelect, activeRoot, selectWorkspace],
   );
-
-  // Search runs over what is already loaded — the fetched trees plus the
-  // shortcut list — so a lookup never hits the disk or the network.
-  const searchIndex = useMemo(() => buildSearchIndex(trees, shortcutTree), [trees, shortcutTree]);
 
   const openSearchHit = useCallback(
     (hit: SearchHit) => {
@@ -918,10 +1492,46 @@ export function Sidebar({
           </div>
         )}
 
-        <div className="px-3 pt-2 pb-6">
+        {/* While a tree drag is in progress the empty space below the tree
+            grows into a drop zone for the workspace root, so an entry can be
+            moved back to the top level without aiming at a row. Only when a
+            single root is visible — with several, "the root" is ambiguous. */}
+        <div
+          className={`px-3 pt-2 pb-6 ${treeDragging.length > 0 && visibleRoots.length === 1 ? "min-h-[200px]" : ""}`}
+          onDragEnter={(e) => {
+            if (visibleRoots.length !== 1) return;
+            treeDnd.onDragEnter(e, visibleRoots[0].path);
+          }}
+          onDragOver={(e) => {
+            if (visibleRoots.length !== 1) return;
+            treeDnd.onDragOver(e, visibleRoots[0].path);
+          }}
+          onDragLeave={() => {
+            if (visibleRoots.length === 1) treeDnd.onDragLeave(visibleRoots[0].path);
+          }}
+          onDrop={(e) => {
+            if (visibleRoots.length !== 1) return;
+            treeDnd.onDrop(e, visibleRoots[0].path);
+          }}
+        >
           {visibleRoots.map((root) => {
             return (
-              <div key={root.path} className="mb-5">
+              // The area around a root's tree is a drop target for the root
+              // directory itself, so an entry can be moved back to the top
+              // level. Rows stop propagation, so only the empty space here
+              // (and the padding around the rows) reaches this handler.
+              <div
+                key={root.path}
+                className={`mb-5 rounded-md transition-colors ${
+                  treeDnd.overDir === root.path
+                    ? "bg-[color-mix(in_srgb,var(--primary)_8%,transparent)]"
+                    : ""
+                }`}
+                onDragEnter={(e) => treeDnd.onDragEnter(e, root.path)}
+                onDragOver={(e) => treeDnd.onDragOver(e, root.path)}
+                onDragLeave={() => treeDnd.onDragLeave(root.path)}
+                onDrop={(e) => treeDnd.onDrop(e, root.path)}
+              >
                 {rootErrors[root.path] ? (
                   <div className="mx-2 px-3 py-2.5 text-[11.5px] text-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] rounded-md">
                     <div className="font-medium mb-0.5">{rootErrors[root.path]}</div>
@@ -944,6 +1554,19 @@ export function Sidebar({
                       collapsedDirs={collapsedDirs}
                       onToggleDir={toggleDir}
                       dirsDefaultCollapsed={dirDefaultClosed.includes(root.path)}
+                      newNode={{
+                        draft: newNodeDraft,
+                        onStart: startNewNode,
+                        onSubmit: submitNewNode,
+                        onCancel: cancelNewNode,
+                      }}
+                      rename={{
+                        path: renamingPath,
+                        onSubmit: submitTreeRename,
+                        onCancel: cancelTreeRename,
+                      }}
+                      dnd={treeDnd}
+                      marks={treeMarks}
                     />
                     {treeTruncated[root.path] && (
                       <div className="mx-2 mt-1 px-3 py-2 text-[10.5px] text-[color-mix(in_srgb,var(--warning)_55%,var(--text-subtle))] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] rounded-md">
@@ -982,8 +1605,16 @@ export function Sidebar({
           path={contextMenu.path}
           source={contextMenu.source}
           alias={contextMenu.alias}
+          nodeType={contextMenu.nodeType}
           onClose={closeContextMenu}
           onStartRename={startRenameAlias}
+          onStartTreeRename={startTreeRename}
+          onTrash={trashTreeNodes}
+          trashCount={
+            contextMenu.nodeType
+              ? trashTargetsFor(contextMenu.path, contextMenu.nodeType).length
+              : 1
+          }
         />
       )}
       {folderContextMenu && (
@@ -1046,6 +1677,9 @@ function SidebarSearch({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // Enter/Escape belong to the IME while it converts (see TreeNameInput):
+    // confirming a Japanese candidate must not open the highlighted hit.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === "Enter") {
       e.preventDefault();
       if (results.length === 0) {
@@ -1922,15 +2556,23 @@ function TreeView({
   collapsedDirs,
   onToggleDir,
   dirsDefaultCollapsed,
+  newNode,
+  rename,
+  dnd,
+  marks,
 }: {
   entries: TreeEntry[];
   selectedPath: string | null;
   onSelect: (path: string) => void;
-  onContextMenu: (x: number, y: number, path: string) => void;
+  onContextMenu: TreeContextMenuOpener;
   depth: number;
   collapsedDirs: Record<string, boolean>;
   onToggleDir: (path: string, collapse: boolean) => void;
   dirsDefaultCollapsed: boolean;
+  newNode: NewNodeAPI;
+  rename: TreeRenameAPI;
+  dnd: TreeDnD;
+  marks: TreeMarksAPI;
 }) {
   return (
     <ul>
@@ -1946,6 +2588,10 @@ function TreeView({
               collapsedDirs={collapsedDirs}
               onToggleDir={onToggleDir}
               dirsDefaultCollapsed={dirsDefaultCollapsed}
+              newNode={newNode}
+              rename={rename}
+              dnd={dnd}
+              marks={marks}
             />
           ) : (
             <FileNode
@@ -1954,6 +2600,9 @@ function TreeView({
               onSelect={onSelect}
               onContextMenu={onContextMenu}
               depth={depth}
+              rename={rename}
+              dnd={dnd}
+              marks={marks}
             />
           )}
         </li>
@@ -1971,53 +2620,135 @@ function DirectoryNode({
   collapsedDirs,
   onToggleDir,
   dirsDefaultCollapsed,
+  newNode,
+  rename,
+  dnd,
+  marks,
 }: {
   entry: TreeEntry;
   selectedPath: string | null;
   onSelect: (path: string) => void;
-  onContextMenu: (x: number, y: number, path: string) => void;
+  onContextMenu: TreeContextMenuOpener;
   depth: number;
   collapsedDirs: Record<string, boolean>;
   onToggleDir: (path: string, collapse: boolean) => void;
   dirsDefaultCollapsed: boolean;
+  newNode: NewNodeAPI;
+  rename: TreeRenameAPI;
+  dnd: TreeDnD;
+  marks: TreeMarksAPI;
 }) {
   // Collapse state lives in the shared map (persisted via cookie) so the
   // server can render the exact open/closed layout on first paint. Dirs
   // without an explicit entry follow their root's default.
   const explicit = collapsedDirs[entry.path];
   const open = explicit === undefined ? !dirsDefaultCollapsed : !explicit;
+  const draft = newNode.draft?.dir === entry.path ? newNode.draft : null;
+  const isDragging = dnd.dragging.some((s) => s.path === entry.path);
+  const isDropTarget = dnd.overDir === entry.path;
+  const isMarked = marks.paths.includes(entry.path);
   return (
     <div>
       {/* The hover group covers just this row, not the nested children. */}
-      <div className="tree-row group/row" data-reveal-path={entry.path}>
-        <button
-          type="button"
-          onClick={() => onToggleDir(entry.path, open)}
-          className="tree-dir"
-          style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "28px" }}
-          aria-expanded={open}
-        >
-          <span className={`tree-dir-chevron ${open ? "is-open" : ""}`}>
-            <ChevronIcon />
-          </span>
-          <span className="truncate">{entry.name}</span>
-        </button>
-        <CopyPathButton
-          path={entry.path}
-          className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100"
-        />
+      <div
+        className={`tree-row group/row rounded-md transition-colors ${
+          isDropTarget
+            ? "bg-[color-mix(in_srgb,var(--primary)_14%,transparent)]"
+            : isMarked
+              ? "bg-[color-mix(in_srgb,var(--primary)_10%,transparent)]"
+              : ""
+        } ${isDragging ? "opacity-50" : ""}`}
+        data-reveal-path={entry.path}
+        // Dropping anywhere on a folder row moves the dragged entry into it.
+        onDragEnter={(e) => {
+          e.stopPropagation();
+          dnd.onDragEnter(e, entry.path);
+          dnd.onHoverFolder(entry.path, open);
+        }}
+        onDragOver={(e) => {
+          e.stopPropagation();
+          dnd.onDragOver(e, entry.path);
+          dnd.onHoverFolder(entry.path, open);
+        }}
+        onDragLeave={(e) => {
+          e.stopPropagation();
+          dnd.onDragLeave(entry.path);
+        }}
+        onDrop={(e) => dnd.onDrop(e, entry.path)}
+      >
+        {rename.path === entry.path ? (
+          <TreeNameInput
+            kind="folder"
+            depth={depth}
+            initial={entry.name}
+            onSubmit={(name) => rename.onSubmit(entry.path, "folder", name)}
+            onCancel={rename.onCancel}
+          />
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={(e) => {
+                if (marks.onRowClick(e, { path: entry.path, type: "directory" })) return;
+                onToggleDir(entry.path, open);
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onContextMenu(e.clientX, e.clientY, entry.path, "directory");
+              }}
+              draggable
+              onDragStart={(e) => {
+                e.stopPropagation();
+                dnd.onDragStart(e, { path: entry.path, type: "directory" });
+              }}
+              onDragEnd={dnd.onDragEnd}
+              className="tree-dir"
+              style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "76px" }}
+              aria-expanded={open}
+            >
+              <span className={`tree-dir-chevron ${open ? "is-open" : ""}`}>
+                <ChevronIcon />
+              </span>
+              <span className="truncate">{entry.name}</span>
+            </button>
+            <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover/row:opacity-100 focus-within:opacity-100">
+              <NewNodeButton kind="file" onClick={() => newNode.onStart(entry.path, "file")} />
+              <NewNodeButton kind="folder" onClick={() => newNode.onStart(entry.path, "folder")} />
+              <CopyPathButton path={entry.path} />
+            </div>
+          </>
+        )}
       </div>
-      {open && entry.children && (
-        <TreeView
-          entries={entry.children}
-          selectedPath={selectedPath}
-          onSelect={onSelect}
-          onContextMenu={onContextMenu}
-          depth={depth + 1}
-          collapsedDirs={collapsedDirs}
-          onToggleDir={onToggleDir}
-          dirsDefaultCollapsed={dirsDefaultCollapsed}
-        />
+      {open && (
+        <>
+          {draft && (
+            <TreeNameInput
+              // Remounting per kind resets the field when switching file↔folder.
+              key={draft.kind}
+              kind={draft.kind}
+              depth={depth + 1}
+              onSubmit={(name) => newNode.onSubmit(entry.path, draft.kind, name)}
+              onCancel={newNode.onCancel}
+            />
+          )}
+          {entry.children && (
+            <TreeView
+              entries={entry.children}
+              selectedPath={selectedPath}
+              onSelect={onSelect}
+              onContextMenu={onContextMenu}
+              depth={depth + 1}
+              collapsedDirs={collapsedDirs}
+              onToggleDir={onToggleDir}
+              dirsDefaultCollapsed={dirsDefaultCollapsed}
+              newNode={newNode}
+              rename={rename}
+              dnd={dnd}
+              marks={marks}
+            />
+          )}
+        </>
       )}
     </div>
   );
@@ -2029,27 +2760,80 @@ function FileNode({
   onSelect,
   onContextMenu,
   depth,
+  rename,
+  dnd,
+  marks,
 }: {
   entry: TreeEntry;
   selectedPath: string | null;
   onSelect: (path: string) => void;
-  onContextMenu: (x: number, y: number, path: string) => void;
+  onContextMenu: TreeContextMenuOpener;
   depth: number;
+  rename: TreeRenameAPI;
+  dnd: TreeDnD;
+  marks: TreeMarksAPI;
 }) {
   const isSelected = selectedPath === entry.path;
   const ext = entry.name.match(/\.(html?|md|markdown)$/i)?.[1].toLowerCase() ?? "";
   const display = entry.name.replace(/\.(html?|md|markdown)$/i, "");
   const isMd = ext === "md" || ext === "markdown";
+  if (rename.path === entry.path) {
+    return (
+      <div className="tree-row" data-reveal-path={entry.path}>
+        <TreeNameInput
+          kind="file"
+          depth={depth}
+          initial={entry.name}
+          onSubmit={(name) => rename.onSubmit(entry.path, "file", name)}
+          onCancel={rename.onCancel}
+        />
+      </div>
+    );
+  }
+  // Dropping onto a file means "into the folder it sits in", as in VS Code.
+  const dropDir = parentDir(entry.path);
   return (
-    <div className="tree-row group/row" data-reveal-path={entry.path}>
+    // No drop highlight here: the containing folder's row is the actual target
+    // and lights up instead, so hovering one file doesn't flash its siblings.
+    <div
+      className={`tree-row group/row rounded-md transition-colors ${
+        marks.paths.includes(entry.path)
+          ? "bg-[color-mix(in_srgb,var(--primary)_10%,transparent)]"
+          : ""
+      } ${dnd.dragging.some((s) => s.path === entry.path) ? "opacity-50" : ""}`}
+      data-reveal-path={entry.path}
+      onDragEnter={(e) => {
+        e.stopPropagation();
+        dnd.onDragEnter(e, dropDir);
+        dnd.onHoverFolder(dropDir, true);
+      }}
+      onDragOver={(e) => {
+        e.stopPropagation();
+        dnd.onDragOver(e, dropDir);
+      }}
+      onDragLeave={(e) => {
+        e.stopPropagation();
+        dnd.onDragLeave(dropDir);
+      }}
+      onDrop={(e) => dnd.onDrop(e, dropDir)}
+    >
       <button
         type="button"
-        onClick={() => onSelect(entry.path)}
+        onClick={(e) => {
+          if (marks.onRowClick(e, { path: entry.path, type: "file" })) return;
+          onSelect(entry.path);
+        }}
         onContextMenu={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          onContextMenu(e.clientX, e.clientY, entry.path);
+          onContextMenu(e.clientX, e.clientY, entry.path, "file");
         }}
+        draggable
+        onDragStart={(e) => {
+          e.stopPropagation();
+          dnd.onDragStart(e, { path: entry.path, type: "file" });
+        }}
+        onDragEnd={dnd.onDragEnd}
         className={`tree-item ${isSelected ? "is-selected" : ""}`}
         style={{ paddingLeft: `${depth * 12 + 14}px`, paddingRight: "28px" }}
         title={entry.path}
@@ -2142,6 +2926,162 @@ function CopyPathButton({ path, className = "" }: { path: string; className?: st
     >
       {copied ? <CheckIcon /> : <CopyIcon />}
     </button>
+  );
+}
+
+function FilePlusIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M9 1.9H4.3c-.55 0-1 .45-1 1v10.2c0 .55.45 1 1 1H8" />
+      <path d="M9 1.9l3.7 3.7v2" />
+      <path d="M11.8 9.9v4.2" />
+      <path d="M9.7 12h4.2" />
+    </svg>
+  );
+}
+
+// Trailing "create here" controls for a directory row. Like CopyPathButton
+// they are siblings of the row's main button so clicking one never toggles
+// the folder.
+function NewNodeButton({ kind, onClick }: { kind: NewNodeKind; onClick: () => void }) {
+  const label = kind === "file" ? "ここに HTML を新規作成" : "ここにフォルダを新規作成";
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onClick();
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.stopPropagation()}
+      title={label}
+      aria-label={label}
+      className="inline-flex items-center justify-center w-5 h-5 rounded flex-shrink-0 text-[var(--text-subtle)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+    >
+      {kind === "file" ? <FilePlusIcon /> : <FolderPlusIcon />}
+    </button>
+  );
+}
+
+// VS Code-style inline name field in the tree — used both for the draft row
+// that creates a file/folder (`initial` empty) and for renaming an existing
+// one (`initial` = its current name). Dismissing an *empty* field (blur,
+// Escape) simply removes it. A name that has been typed is never thrown away
+// by losing focus — blur commits it, the same as Enter — and a rejected name
+// (duplicate, bad characters) keeps the row open with the text intact so it
+// can be corrected instead of retyped.
+function TreeNameInput({
+  kind,
+  depth,
+  initial = "",
+  onSubmit,
+  onCancel,
+}: {
+  kind: NewNodeKind;
+  depth: number;
+  initial?: string;
+  onSubmit: (name: string) => Promise<string | null>;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  // Guards the row against settling twice (Enter then the blur it causes).
+  const settledRef = useRef(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const label = kind === "file" ? "新規ファイル名" : "新規フォルダ名";
+
+  // Renaming starts with the extension out of the selection (as editors do),
+  // so typing replaces just the name part.
+  useEffect(() => {
+    if (!initial) return;
+    const dot = initial.lastIndexOf(".");
+    inputRef.current?.setSelectionRange(0, dot > 0 ? dot : initial.length);
+  }, [initial]);
+
+  const cancel = () => {
+    // A request already in flight can't be recalled, but the row must not trap
+    // the sidebar if it stalls (e.g. a slow network mount). Dismiss it and let
+    // the request report its own outcome.
+    if (busy) {
+      toast("処理中です。完了すると一覧に反映されます");
+      onCancel();
+      return;
+    }
+    if (settledRef.current) return;
+    settledRef.current = true;
+    onCancel();
+  };
+
+  const submit = async () => {
+    if (settledRef.current) return;
+    const name = value.trim();
+    if (!name) {
+      cancel();
+      return;
+    }
+    settledRef.current = true;
+    setBusy(true);
+    const err = await onSubmit(name);
+    setBusy(false);
+    if (!err) return; // success: the row unmounts as the tree reloads
+    settledRef.current = false;
+    toast.error(err);
+    inputRef.current?.focus();
+  };
+
+  return (
+    <div
+      className="tree-item is-selected"
+      style={{ paddingLeft: `${depth * 12 + 14}px`, paddingRight: "8px" }}
+    >
+      <span
+        className={`file-icon flex-shrink-0 ${kind === "file" ? "file-icon-html" : ""}`}
+        aria-hidden="true"
+      >
+        {kind === "file" ? <HtmlIcon /> : <FolderIcon open={false} />}
+      </span>
+      <input
+        ref={inputRef}
+        // biome-ignore lint/a11y/noAutofocus: the draft row appears on user action and is useless unfocused
+        autoFocus
+        type="text"
+        value={value}
+        placeholder={label}
+        aria-label={label}
+        spellCheck={false}
+        autoCapitalize="off"
+        autoComplete="off"
+        readOnly={busy}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          // While an IME is composing (kana → kanji), Enter belongs to the
+          // conversion, not to the name: it commits the candidate and the
+          // field stays open until Enter is pressed again on settled text.
+          // Safari reports this as keyCode 229 rather than isComposing.
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+          if (e.key === "Enter") {
+            e.preventDefault();
+            submit();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            cancel();
+          }
+        }}
+        onBlur={submit}
+        className="flex-1 min-w-0 bg-transparent border-0 outline-none text-[var(--text)] text-[12.5px] px-0 py-0"
+      />
+    </div>
   );
 }
 
@@ -2578,6 +3518,8 @@ function AliasRenameInput({
         autoComplete="off"
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
+          // Enter belongs to the IME while it is converting (see TreeNameInput).
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
           if (e.key === "Enter") {
             e.preventDefault();
             submit();
@@ -2717,16 +3659,27 @@ function ContextMenu({
   path,
   source,
   alias,
+  nodeType,
   onClose,
   onStartRename,
+  onStartTreeRename,
+  onTrash,
+  trashCount,
 }: {
   x: number;
   y: number;
   path: string;
   source: "root" | "shortcut";
   alias?: string;
+  nodeType?: "file" | "directory";
   onClose: () => void;
+  // Shortcut rows rename their display alias; tree rows rename the file or
+  // folder on disk.
   onStartRename: (path: string) => void;
+  onStartTreeRename: (path: string) => void;
+  onTrash: (path: string, nodeType: "file" | "directory") => void;
+  // How many entries the trash item would act on (the marked set, or 1).
+  trashCount: number;
 }) {
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -2758,7 +3711,9 @@ function ContextMenu({
 
   const filename = path.split("/").pop() ?? path;
   const isShortcut = source === "shortcut";
-  const itemCount = isShortcut ? 2 : 1;
+  // Tree rows: rename / copy path / move to Trash. Shortcut rows: alias / copy.
+  const canEditOnDisk = !isShortcut && nodeType !== undefined;
+  const itemCount = canEditOnDisk ? 3 : isShortcut ? 2 : 1;
 
   const MENU_W = 200;
   const MENU_H = 36 + itemCount * 30 + (isShortcut ? 16 : 0);
@@ -2804,6 +3759,16 @@ function ContextMenu({
           表示名を変更
         </button>
       )}
+      {canEditOnDisk && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => onStartTreeRename(path)}
+          className="w-full text-left px-3 py-1.5 text-[12px] text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+        >
+          名前を変更
+        </button>
+      )}
       <button
         type="button"
         role="menuitem"
@@ -2812,6 +3777,17 @@ function ContextMenu({
       >
         パスをコピー
       </button>
+      {canEditOnDisk && nodeType && (
+        <button
+          type="button"
+          role="menuitem"
+          // Nothing is deleted here — this only opens the confirmation dialog.
+          onClick={() => onTrash(path, nodeType)}
+          className="w-full text-left px-3 py-1.5 text-[12px] text-[var(--danger)] hover:bg-[color-mix(in_srgb,var(--danger)_10%,transparent)] transition-colors"
+        >
+          {trashCount > 1 ? `${trashCount} 件をゴミ箱に移動` : "ゴミ箱に移動"}
+        </button>
+      )}
     </div>
   );
 }
