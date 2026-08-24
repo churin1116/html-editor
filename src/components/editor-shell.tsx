@@ -322,11 +322,40 @@ export function EditorShell({
     [file, draft, conflict],
   );
 
+  // App-wide shortcuts. Keys are lower-cased before comparing so Caps Lock (or
+  // a Shift held over from the previous keystroke) doesn't silently swallow
+  // them. Keystrokes made inside the designMode iframe don't reach this
+  // listener on their own — HtmlSource forwards the app-wide ones up here.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+      if (e.isComposing) return;
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      const key = e.key.toLowerCase();
+      if (key === "s") {
         e.preventDefault();
         handleSave();
+        return;
+      }
+      // ⌘P — jump to the sidebar's file search, opening the sidebar if it's
+      // collapsed. The focus is deferred because the input only becomes
+      // focusable once the re-render has cleared the aside's aria-hidden — a
+      // timeout rather than requestAnimationFrame, which a background tab
+      // throttles to never.
+      if (key === "p") {
+        e.preventDefault();
+        setSidebarOpen(true);
+        setTimeout(() => {
+          const input = document.querySelector<HTMLInputElement>("[data-sidebar-search]");
+          input?.focus();
+          input?.select();
+        }, 0);
+        return;
+      }
+      // ⌘\ — toggle the sidebar. e.code covers layouts where the backslash
+      // key produces something else (JIS ¥).
+      if (key === "\\" || e.code === "Backslash") {
+        e.preventDefault();
+        setSidebarOpen((open) => !open);
       }
     }
     window.addEventListener("keydown", onKeyDown);

@@ -1768,6 +1768,8 @@ function SidebarSearch({
           onKeyDown={handleKeyDown}
           onFocus={() => setListOpen(true)}
           placeholder="ファイル名で検索"
+          // Focus target for the shell's ⌘P shortcut.
+          data-sidebar-search
           spellCheck={false}
           autoCapitalize="off"
           autoComplete="off"
