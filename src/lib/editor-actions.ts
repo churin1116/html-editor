@@ -193,7 +193,7 @@ export function applyMdAction(view: EditorView, id: ActionId) {
       insertCodeBlock(view);
       break;
     case "link":
-      wrap(view, "[", "](url)", "text");
+      void insertMdLink(view);
       break;
     case "table":
       insertTable(view);
@@ -283,11 +283,69 @@ async function insertAbbr(editor: TiptapEditor) {
   editor.chain().focus().setMark("abbr", { title }).run();
 }
 
-// Prompt for a URL and set a link on the current selection. Uses a fresh chain
-// created after the prompt resolves (the outer chain is stale by then).
+// Prompt for a URL and set a link on the current selection (⌘+K, or the
+// toolbar's リンク). Uses a fresh chain created after the prompt resolves (the
+// outer chain is stale by then). Three cases, in the order they're handled:
+//   - caret inside a link, nothing selected → the whole link is the target,
+//     so its URL is prefilled and editing it rewrites the entire anchor
+//   - text selected → that text becomes the link
+//   - caret in plain text → the URL is inserted as its own link text
+// Submitting an empty URL removes the link; cancelling leaves everything as is.
 async function insertLink(editor: TiptapEditor) {
-  const url = await promptDialog({ title: "リンク", placeholder: "URL", confirmLabel: "設定" });
-  if (url) editor.chain().focus().setLink({ href: url }).run();
+  const inLink = editor.isActive("link");
+  const collapsed = editor.state.selection.empty;
+  const previous = inLink ? ((editor.getAttributes("link").href as string | undefined) ?? "") : "";
+  const raw = await promptDialog({
+    title: "リンク",
+    placeholder: "URL",
+    defaultValue: previous,
+    confirmLabel: "設定",
+  });
+  if (raw === null) return;
+  const href = raw.trim();
+  const chain = editor.chain().focus();
+  if (inLink && collapsed) chain.extendMarkRange("link");
+  if (!href) {
+    if (inLink) chain.unsetLink().run();
+    return;
+  }
+  if (collapsed && !inLink) {
+    chain
+      .insertContent({ type: "text", text: href, marks: [{ type: "link", attrs: { href } }] })
+      .run();
+    return;
+  }
+  chain.setLink({ href }).run();
+}
+
+// Markdown counterpart of insertLink: prompt for a URL and wrap the selection
+// as [text](url). With nothing selected the URL doubles as the link text, so
+// the result is never an empty [](…) the user has to go back and fill in.
+export async function insertMdLink(view: EditorView, presetUrl?: string) {
+  const { from, to } = view.state.selection.main;
+  const selected = view.state.sliceDoc(from, to);
+  let href = presetUrl?.trim() ?? "";
+  if (!href) {
+    const raw = await promptDialog({
+      title: "リンク",
+      placeholder: "URL",
+      confirmLabel: "設定",
+    });
+    if (raw === null) return;
+    href = raw.trim();
+    if (!href) return;
+  }
+  // A selection spanning lines can't sit inside [](): fall back to appending
+  // the link after it rather than producing broken Markdown.
+  const label = selected && !selected.includes("\n") ? selected : href;
+  const insert = `[${label}](${href})`;
+  const replaceFrom = label === selected ? from : to;
+  view.dispatch({
+    changes: { from: replaceFrom, to, insert },
+    selection: { anchor: replaceFrom + insert.length },
+    userEvent: "input.link",
+  });
+  view.focus();
 }
 
 // The card is inserted only once its metadata is in hand, so what lands in the

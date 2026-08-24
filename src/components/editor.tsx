@@ -172,6 +172,7 @@ export function Editor({
       // the relationship.
       LinkCard,
       LinkCardOnEnter,
+      EditorShortcuts,
       Div,
       Aside,
       Figure,
@@ -263,13 +264,24 @@ export function Editor({
           uploadAndInsert(view, files);
           return true;
         }
-        // A bare URL pasted into an empty paragraph becomes a card. Pasting
-        // into text, or over a selection, stays an ordinary paste — the user
-        // is quoting a URL, not filing a link.
+        // A bare URL pasted into an empty paragraph becomes a card; pasted
+        // over selected text it links that text (the URL never replaces what
+        // was selected). Pasting into the middle of a line stays an ordinary
+        // paste — the user is quoting a URL, not filing a link.
         const text = event.clipboardData?.getData("text/plain") ?? "";
         if (!isSingleUrl(text)) return false;
         const { selection, schema } = view.state;
-        if (!selection.empty) return false;
+        if (!selection.empty) {
+          // Only a text selection can carry a link mark — with a node (an
+          // image, a card) selected, the paste replaces it as usual.
+          if (!(selection instanceof TextSelection) || !schema.marks.link) return false;
+          const { from, to } = selection;
+          if (!view.state.doc.textBetween(from, to).trim()) return false;
+          event.preventDefault();
+          const mark = schema.marks.link.create({ href: text.trim() });
+          view.dispatch(view.state.tr.addMark(from, to, mark).scrollIntoView());
+          return true;
+        }
         const parent = selection.$from.parent;
         if (parent.type.name !== "paragraph" || parent.content.size > 0) return false;
         if (!schema.nodes.linkCard) return false;
@@ -823,6 +835,26 @@ const LinkCardOnEnter = Extension.create({
         void convertParagraphToCard(editor.view, $from.before(), url);
         return true;
       },
+    };
+  },
+});
+
+// The shortcuts the toolbar menu advertises but Tiptap has no binding of its
+// own for. Both run the same applyHtmlAction the menu does, so a shortcut and
+// its menu entry can never drift apart.
+const EditorShortcuts = Extension.create({
+  name: "editorShortcuts",
+  addKeyboardShortcuts() {
+    const run = (id: "link" | "ruby") => () => {
+      if (!this.editor.isEditable) return false;
+      void applyHtmlAction(this.editor, id);
+      return true;
+    };
+    return {
+      // ⌘/Ctrl+K — link dialog for the current selection (see insertLink).
+      "Mod-k": run("link"),
+      // ⌘/Ctrl+Shift+I — ruby over the selection.
+      "Mod-Shift-i": run("ruby"),
     };
   },
 });

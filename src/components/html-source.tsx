@@ -1,6 +1,7 @@
 "use client";
 
 import { attachImageResizer } from "@/lib/image-resize";
+import { isSingleUrl } from "@/lib/link-card";
 import { attachMarkdownInputRules, formatBlockPreservingAttrs } from "@/lib/md-input-rules";
 import { type ToolbarButton, attachSelectionToolbar } from "@/lib/selection-toolbar";
 import {
@@ -126,8 +127,92 @@ export function HtmlSource({
         lastEmittedRef.current = html;
         onChangeRef.current(html);
       };
+      // Keyboard shortcuts. designMode gives us ⌘B/⌘I/⌘U/⌘Z for free, but
+      // Chrome's bold/italic produce <b>/<i> while the toolbar normalizes them
+      // to <strong>/<em> — so those two are taken over here and routed through
+      // the same commands the toolbar uses. The rest mirror the Tiptap
+      // editor's bindings (headings, lists, quote, strike, inline code) so the
+      // two HTML editors feel the same. Digits are read off e.code because the
+      // shifted character depends on the layout.
+      const cmd = docCommands(doc, onInput);
       const onKeyDown = (e: KeyboardEvent) => {
-        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        if (e.isComposing) return;
+        if (!(e.metaKey || e.ctrlKey)) return;
+        const key = e.key.toLowerCase();
+
+        // App-wide shortcuts belong to the shell, which never sees keystrokes
+        // made inside this iframe — hand them up to it.
+        if (!e.altKey && (key === "p" || key === "\\" || e.code === "Backslash")) {
+          e.preventDefault();
+          window.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: e.key,
+              code: e.code,
+              metaKey: e.metaKey,
+              ctrlKey: e.ctrlKey,
+              shiftKey: e.shiftKey,
+              altKey: e.altKey,
+            }),
+          );
+          return;
+        }
+
+        if (e.altKey) {
+          // ⌘⌥0 → paragraph, ⌘⌥1–6 → heading, as in Tiptap.
+          const digit = /^Digit([0-6])$/.exec(e.code);
+          if (!digit) return;
+          e.preventDefault();
+          const level = Number(digit[1]);
+          if (level === 0) cmd.setBlock("p");
+          else cmd.toggleHeading(`h${level}`);
+          return;
+        }
+
+        if (e.shiftKey) {
+          if (e.code === "Digit7") {
+            e.preventDefault();
+            cmd.exec("insertOrderedList");
+            return;
+          }
+          if (e.code === "Digit8") {
+            e.preventDefault();
+            cmd.exec("insertUnorderedList");
+            return;
+          }
+          if (key === "b") {
+            e.preventDefault();
+            cmd.toggleBlockquote();
+            return;
+          }
+          if (key === "s") {
+            e.preventDefault();
+            cmd.execInline("strikeThrough", "strike", "s");
+            return;
+          }
+          // Anything else (⌘⇧Z redo…) stays with the browser.
+        }
+
+        if (key === "b") {
+          e.preventDefault();
+          cmd.execInline("bold", "b", "strong");
+          return;
+        }
+        if (key === "i") {
+          e.preventDefault();
+          cmd.execInline("italic", "i", "em");
+          return;
+        }
+        if (key === "e") {
+          e.preventDefault();
+          cmd.toggleCode();
+          return;
+        }
+        if (key === "k") {
+          e.preventDefault();
+          applyLinkInDoc(doc, onInput);
+          return;
+        }
+        if (key === "s") {
           e.preventDefault();
           const html = serialize();
           lastEmittedRef.current = html;
@@ -141,11 +226,21 @@ export function HtmlSource({
       // to the local file, blowing away the document.
       const onPaste = (e: ClipboardEvent) => {
         const files = extractImageFilesFromDataTransfer(e.clipboardData);
-        if (files.length === 0) return;
-        e.preventDefault();
+        if (files.length > 0) {
+          e.preventDefault();
+          const sel = doc.getSelection();
+          const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
+          void uploadAndInsertIntoDoc(doc, files, range, onInput);
+          return;
+        }
+        // A URL pasted over selected text links that text instead of
+        // replacing it. Anywhere else it stays an ordinary paste.
+        const text = e.clipboardData?.getData("text/plain") ?? "";
+        if (!isSingleUrl(text)) return;
         const sel = doc.getSelection();
-        const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
-        void uploadAndInsertIntoDoc(doc, files, range, onInput);
+        if (!sel || sel.isCollapsed || !sel.toString().trim()) return;
+        e.preventDefault();
+        applyLinkInDoc(doc, onInput, text);
       };
       const onDragOver = (e: DragEvent) => {
         if (e.dataTransfer?.types?.includes("Files")) e.preventDefault();
@@ -273,11 +368,59 @@ function normalizeInlineTags(doc: Document, from: string, to: string) {
   }
 }
 
-// Buttons for the selection toolbar in designMode. Formatting goes through
-// execCommand (undo-friendly, same as the markdown input rules); inline code
-// is DOM surgery because Chrome's engine has no code command and its
-// insertHTML sanitizer rewrites <code> (see md-input-rules.ts).
-function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
+// Set (or edit, or clear) a link in the designMode document — shared by the
+// toolbar's リンク button, ⌘+K, and pasting a URL over a selection. Mirrors the
+// Tiptap editor's insertLink: a caret inside a link targets that whole anchor
+// and prefills its URL, selected text becomes the link, a caret in plain text
+// gets the URL inserted as its own link text, and an empty URL unlinks.
+// execCommand is used throughout so the change lands on the native undo stack.
+function applyLinkInDoc(doc: Document, emit: () => void, presetUrl?: string) {
+  const sel = doc.getSelection();
+  if (!sel || sel.rangeCount === 0) return;
+  const node = sel.anchorNode;
+  const el = node instanceof HTMLElement ? node : node?.parentElement;
+  const existing = el?.closest("a") ?? null;
+  if (sel.isCollapsed && existing) {
+    const range = doc.createRange();
+    range.selectNodeContents(existing);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  const raw = presetUrl ?? doc.defaultView?.prompt("URL", existing?.getAttribute("href") ?? "");
+  // Cancelled (or no window to prompt from) — leave the document alone.
+  if (raw == null) return;
+  const href = raw.trim();
+  if (!href) {
+    if (existing) {
+      doc.execCommand("unlink");
+      emit();
+    }
+    return;
+  }
+  if (sel.isCollapsed) {
+    doc.execCommand("insertHTML", false, `<a href="${escapeHtml(href)}">${escapeHtml(href)}</a>`);
+  } else {
+    doc.execCommand("createLink", false, href);
+  }
+  emit();
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// The designMode editing primitives, shared by the selection toolbar and the
+// keyboard shortcuts so both produce identical markup — the toolbar's B has
+// always normalized Chrome's <b> to <strong>, and ⌘B has to do the same or the
+// saved tags would depend on which one the user reached for. Formatting goes
+// through execCommand (undo-friendly, same as the markdown input rules);
+// inline code is DOM surgery because Chrome's engine has no code command and
+// its insertHTML sanitizer rewrites <code> (see md-input-rules.ts).
+function docCommands(doc: Document, emit: () => void) {
   const exec = (cmd: string, val?: string) => {
     doc.execCommand(cmd, false, val);
     emit();
@@ -308,9 +451,20 @@ function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
     return n ? (n instanceof HTMLElement ? n : n.parentElement) : null;
   };
   const inTag = (selector: string) => Boolean(anchorEl()?.closest(selector));
+  const setBlock = (tag: string) => {
+    formatBlockPreservingAttrs(doc, tag);
+    emit();
+  };
   const toggleHeading = (tag: string) => {
     formatBlockPreservingAttrs(doc, blockValue() === tag ? "p" : tag);
     emit();
+  };
+  const toggleBlockquote = () => {
+    if (inTag("blockquote")) {
+      exec("outdent");
+    } else {
+      setBlock("blockquote");
+    }
   };
   const toggleCode = () => {
     const existing = anchorEl()?.closest("code");
@@ -333,6 +487,31 @@ function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
     sel.addRange(r);
     emit();
   };
+  return {
+    exec,
+    execInline,
+    state,
+    blockValue,
+    inTag,
+    setBlock,
+    toggleHeading,
+    toggleBlockquote,
+    toggleCode,
+  };
+}
+
+// Buttons for the selection toolbar in designMode.
+function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
+  const {
+    exec,
+    execInline,
+    state,
+    blockValue,
+    inTag,
+    toggleHeading,
+    toggleBlockquote,
+    toggleCode,
+  } = docCommands(doc, emit);
   return [
     {
       label: "B",
@@ -391,24 +570,14 @@ function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
     {
       label: "❝",
       title: "引用",
-      action: () => {
-        if (inTag("blockquote")) {
-          exec("outdent");
-        } else {
-          formatBlockPreservingAttrs(doc, "blockquote");
-          emit();
-        }
-      },
+      action: toggleBlockquote,
       isActive: () => inTag("blockquote"),
     },
     { type: "separator" },
     {
       label: "リンク",
       title: "リンクを設定",
-      action: () => {
-        const url = doc.defaultView?.prompt("URL");
-        if (url) exec("createLink", url);
-      },
+      action: () => applyLinkInDoc(doc, emit),
       isActive: () => inTag("a"),
     },
     {

@@ -1,14 +1,42 @@
 "use client";
 
+import { type ActionId, applyMdAction, insertMdLink } from "@/lib/editor-actions";
+import { isSingleUrl } from "@/lib/link-card";
 import { mdProse } from "@/lib/md-prose";
 import { PROSE_FONT } from "@/lib/prose-css";
 import { loadScroll, saveScroll } from "@/lib/scroll-memory";
 import { extractImageFilesFromDataTransfer, uploadImage } from "@/lib/upload-image";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { EditorView } from "@codemirror/view";
+import { Prec } from "@codemirror/state";
+import { EditorView, keymap } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+
+// key → toolbar action, so a shortcut and its menu entry can't drift apart.
+// ⌘K is the one that isn't a plain applyMdAction: it prompts for the URL.
+const MD_SHORTCUTS: { key: string; run: (view: EditorView) => boolean }[] = [
+  {
+    key: "Mod-k",
+    run: (view) => {
+      void insertMdLink(view);
+      return true;
+    },
+  },
+  ...(
+    [
+      ["Mod-b", "bold"],
+      ["Mod-i", "italic"],
+      ["Mod-Shift-i", "ruby"],
+    ] as const
+  ).map(([key, id]: readonly [string, ActionId]) => ({
+    key,
+    run: (view: EditorView) => {
+      applyMdAction(view, id);
+      return true;
+    },
+  })),
+];
 
 export function MdEditor({
   content,
@@ -84,12 +112,28 @@ export function MdEditor({
       markdown({ base: markdownLanguage }),
       mdProse,
       EditorView.lineWrapping,
+      // The shortcuts the toolbar menu advertises for Markdown mode. CodeMirror
+      // binds none of them itself (only history/search come from basicSetup),
+      // so without this the hints in the menu were decoration. Prec.high keeps
+      // them ahead of anything the default keymaps might claim.
+      Prec.high(keymap.of(MD_SHORTCUTS)),
       EditorView.domEventHandlers({
         paste: (event, view) => {
           const files = extractImageFilesFromDataTransfer(event.clipboardData);
-          if (files.length === 0) return false;
+          if (files.length > 0) {
+            event.preventDefault();
+            void uploadAndInsertMd(view, files);
+            return true;
+          }
+          // A URL pasted over selected text links that text instead of
+          // replacing it. Anywhere else it's an ordinary paste.
+          const text = event.clipboardData?.getData("text/plain") ?? "";
+          if (!isSingleUrl(text)) return false;
+          const { from, to } = view.state.selection.main;
+          if (from === to) return false;
+          if (!view.state.sliceDoc(from, to).trim()) return false;
           event.preventDefault();
-          void uploadAndInsertMd(view, files);
+          void insertMdLink(view, text);
           return true;
         },
         drop: (event, view) => {
