@@ -21,6 +21,7 @@ export const PROSE_CSS = `
   font-family: ${PROSE_FONT};
   line-height: 1.8;
   color: var(--text);
+  --base-margin: 1.9em;
 }
 .prose-canvas h1,
 .prose-canvas h2,
@@ -29,6 +30,8 @@ export const PROSE_CSS = `
 .prose-canvas h5,
 .prose-canvas h6 { line-height: 1.3; margin-top: 2em; font-weight: 600; }
 ${PROSE_HEADING_SIZES.map((size, i) => `.prose-canvas h${i + 1} { font-size: ${size}; }`).join("\n")}
+.prose-canvas h2 { margin: calc(var(--base-margin) * 1.8) 0 0; }
+.prose-canvas h3 { margin: calc(var(--base-margin) * 1.5) 0 0; }
 .prose-canvas p { margin: 1em 0; }
 /* 強調 (em / i) は斜体ではなく傍点 (・) で示す。和文に真の斜体は無く傾けると
    不自然なため、日本語前提で傍点を既定とする (gutenberg-translator の EPUB/PDF
@@ -47,11 +50,11 @@ ${PROSE_HEADING_SIZES.map((size, i) => `.prose-canvas h${i + 1} { font-size: ${s
   text-decoration-color: var(--border-strong);
 }
 .prose-canvas a:hover { text-decoration-color: var(--text); }
-/* 取り消し線は「済み・無効」の意味なので文字色を muted と subtle の中間まで落とす
-   (muted 単体では light / claude で本文とほぼ同色)。線色は currentColor で追従。 */
+/* 取り消し線は「済み・無効」の意味なので文字色を subtle の 36% (light で #ddd 相当) まで落とす
+   (muted では light で本文とほぼ同色)。線色は currentColor で追従。 */
 .prose-canvas s,
 .prose-canvas del,
-.prose-canvas strike { color: color-mix(in srgb, var(--text-muted), var(--text-subtle)); }
+.prose-canvas strike { color: color-mix(in srgb, var(--text-subtle) 36%, transparent); }
 .prose-canvas pre {
   background: var(--surface-2);
   padding: 1rem;

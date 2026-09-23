@@ -43,12 +43,12 @@ const mdProseHighlight = HighlightStyle.define([
   {
     tag: tags.strikethrough,
     textDecoration: "line-through",
-    color: "color-mix(in srgb, var(--text-muted), var(--text-subtle))",
+    color: "color-mix(in srgb, var(--text-subtle) 36%, transparent)",
   },
   { tag: tags.monospace, class: "cm-md-mono" },
   { tag: tags.link, class: "cm-md-link" },
   { tag: tags.url, color: "var(--text-subtle)" },
-  { tag: tags.quote, color: "color-mix(in srgb, var(--text-muted), var(--text-subtle))" },
+  { tag: tags.quote, color: "var(--text-muted)" },
   // Marker characters: #, **, >, -, ```, [], etc.
   { tag: tags.processingInstruction, color: "var(--text-subtle)" },
   { tag: tags.meta, color: "var(--text-subtle)" },
