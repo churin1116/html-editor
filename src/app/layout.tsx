@@ -20,9 +20,9 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
       <head>
         <meta name="chameleon" content={theme.contract} data-baked={theme.version} />
         {/* biome-ignore lint/security/noDangerouslySetInnerHtml: theme.css comes from our own theme repo (or the build-time generated module) — not user input. */}
-        <style dangerouslySetInnerHTML={{ __html: theme.css }} />
+        <style data-chameleon-theme dangerouslySetInnerHTML={{ __html: theme.css }} />
         {/* biome-ignore lint/security/noDangerouslySetInnerHtml: same trusted source as above. */}
-        <script dangerouslySetInnerHTML={{ __html: theme.js }} />
+        <script data-chameleon-theme dangerouslySetInnerHTML={{ __html: theme.js }} />
       </head>
       <body className="bg-canvas">
         <DialogProvider>{children}</DialogProvider>

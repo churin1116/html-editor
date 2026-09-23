@@ -155,7 +155,7 @@ export function MdEditor({
             // land at the same visual size as the saved HTML.
             fontSize: "16px",
           },
-          // Same measure and typography as .prose-canvas (prose-css.ts) so
+          // Same measure and typography as .prose-canvas (Chameleon theme.css) so
           // editing .md reads like the rendered Chameleon page. The measure
           // lives on .cm-content (not .cm-scroller) so the scroller stays
           // full-width and its scrollbar sits at the window edge.

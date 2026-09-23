@@ -1,6 +1,5 @@
 import { type ChameleonTheme, GENERATED_THEME } from "./chameleon-live";
 import { formatForSave } from "./html-pretty";
-import { PROSE_CSS } from "./prose-css";
 
 const CONTENT_OPEN = '<article id="content" class="prose-canvas" data-html-editor="1">';
 const CONTENT_CLOSE = "</article>";
@@ -31,7 +30,6 @@ export function wrapContent(
 <title>${safeTitle}</title>
 <style data-chameleon-theme>${theme.css}</style>
 <script data-chameleon-theme>${theme.js}</script>
-<style>${PROSE_CSS}</style>
 </head>
 <body class="bg-canvas">
 ${CONTENT_OPEN}

@@ -14,7 +14,7 @@ import type { DOMOutputSpec } from "@tiptap/pm/model";
 // from those attributes on every save. (Editing the inner markup by hand
 // therefore doesn't stick — change the attributes, or re-insert the card.)
 //
-// Everything is styled from the Chameleon variables in PROSE_CSS, so a card
+// Everything is styled from the Chameleon variables (theme.css § PROSE CANVAS), so a card
 // follows the reader's theme like the rest of the document.
 
 export type LinkCardAttrs = {

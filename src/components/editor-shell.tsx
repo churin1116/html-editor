@@ -13,7 +13,6 @@ import {
   applyHtmlAction,
   applyMdAction,
 } from "@/lib/editor-actions";
-import { PROSE_CSS } from "@/lib/prose-css";
 import type { ShortcutNodeWithStatus } from "@/lib/shortcuts";
 import type { TreeEntry } from "@/lib/tree";
 import type { EditorView } from "@codemirror/view";
@@ -367,8 +366,6 @@ export function EditorShell({
       className="grid h-screen transition-[grid-template-columns] duration-200 ease-out"
       style={{ gridTemplateColumns: sidebarOpen ? "300px 1fr" : "0px 1fr" }}
     >
-      {/* biome-ignore lint/security/noDangerouslySetInnerHtml: PROSE_CSS is a static module-level constant. */}
-      <style dangerouslySetInnerHTML={{ __html: PROSE_CSS }} />
       <aside
         className={`bg-[var(--surface)] overflow-hidden flex flex-col ${sidebarOpen ? "border-r border-[var(--border-subtle)]" : ""}`}
         aria-hidden={!sidebarOpen}

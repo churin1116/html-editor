@@ -340,7 +340,7 @@ button {
 
 /* ============================================================
    TipTap editor — only behavioral rules. Visual prose styling
-   lives in src/lib/prose-css.ts (shared with saved HTML files).
+   lives in the Chameleon theme (theme.css § PROSE CANVAS).
    The .tiptap.prose-canvas compound selector beats .prose-canvas
    on specificity regardless of stylesheet source order.
    ============================================================ */
@@ -354,7 +354,7 @@ button {
 }
 
 /* 強調 (em / i) の言語別表示 — エディタ専用トグル。
-   既定は日本語前提で傍点 (・、prose-css.ts で適用)。内容が Latin 主体だと
+   既定は日本語前提で傍点 (・、Chameleon theme.css の PROSE CANVAS で適用)。内容が Latin 主体だと
    Editor が祖先 div に data-content-lang="other" を付けるので、その場合のみ
    西洋式の斜体に戻す。保存 HTML には data-content-lang が無いため、保存ファイル
    の file:// 表示は常に傍点 (全て日本語扱いの方針どおり)。 */

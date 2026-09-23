@@ -1,7 +1,7 @@
 // Obsidian-style "live" styling for the raw Markdown editor (CodeMirror).
 // The document stays plain Markdown — nothing here rewrites text. We only
 // style it so the editing view reads like the Chameleon prose output
-// (prose-css.ts): real heading sizes, prose font, styled quotes/code/links,
+// (.prose-canvas in Chameleon theme.css): real heading sizes, prose font, styled quotes/code/links,
 // with the marker characters (#, **, >) kept visible but dimmed.
 //
 // Two layers:
@@ -38,7 +38,7 @@ const mdProseHighlight = HighlightStyle.define([
   // class, this just keeps token-level consistency.
   { tag: tags.heading, fontWeight: "600" },
   { tag: tags.strong, fontWeight: "700" },
-  // em renders as boten dots to match the saved Chameleon HTML (prose-css.ts).
+  // em renders as boten dots to match the saved Chameleon HTML (.prose-canvas).
   { tag: tags.emphasis, class: "cm-md-em" },
   {
     tag: tags.strikethrough,
@@ -121,7 +121,7 @@ const mdProseBaseTheme = EditorView.baseTheme({
     background: "var(--border)",
     verticalAlign: "middle",
   },
-  // Rendered-table widget — mirrors .prose-canvas table in prose-css.ts.
+  // Rendered-table widget — mirrors .prose-canvas table in Chameleon theme.css.
   ".cm-md-tablewidget": {
     padding: "0.5em 4px",
   },
