@@ -47,6 +47,11 @@ ${PROSE_HEADING_SIZES.map((size, i) => `.prose-canvas h${i + 1} { font-size: ${s
   text-decoration-color: var(--border-strong);
 }
 .prose-canvas a:hover { text-decoration-color: var(--text); }
+/* 取り消し線は「済み・無効」の意味なので文字色を muted と subtle の中間まで落とす
+   (muted 単体では light / claude で本文とほぼ同色)。線色は currentColor で追従。 */
+.prose-canvas s,
+.prose-canvas del,
+.prose-canvas strike { color: color-mix(in srgb, var(--text-muted), var(--text-subtle)); }
 .prose-canvas pre {
   background: var(--surface-2);
   padding: 1rem;

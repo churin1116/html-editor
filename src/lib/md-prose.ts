@@ -40,11 +40,15 @@ const mdProseHighlight = HighlightStyle.define([
   { tag: tags.strong, fontWeight: "700" },
   // em renders as boten dots to match the saved Chameleon HTML (prose-css.ts).
   { tag: tags.emphasis, class: "cm-md-em" },
-  { tag: tags.strikethrough, textDecoration: "line-through" },
+  {
+    tag: tags.strikethrough,
+    textDecoration: "line-through",
+    color: "color-mix(in srgb, var(--text-muted), var(--text-subtle))",
+  },
   { tag: tags.monospace, class: "cm-md-mono" },
   { tag: tags.link, class: "cm-md-link" },
   { tag: tags.url, color: "var(--text-subtle)" },
-  { tag: tags.quote, color: "var(--text-muted)" },
+  { tag: tags.quote, color: "color-mix(in srgb, var(--text-muted), var(--text-subtle))" },
   // Marker characters: #, **, >, -, ```, [], etc.
   { tag: tags.processingInstruction, color: "var(--text-subtle)" },
   { tag: tags.meta, color: "var(--text-subtle)" },
