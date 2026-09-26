@@ -26,6 +26,7 @@ import { loadScroll, saveScroll } from "@/lib/scroll-memory";
 import { Section } from "@/lib/section-node";
 import { type ToolbarButton, attachSelectionToolbar } from "@/lib/selection-toolbar";
 import { Bold, Italic } from "@/lib/tag-preserving-marks";
+import { Toc } from "@/lib/toc-node";
 import {
   DEFAULT_IMAGE_WIDTH,
   extractImageFilesFromDataTransfer,
@@ -172,6 +173,7 @@ export function Editor({
       // the relationship.
       LinkCard,
       LinkCardOnEnter,
+      Toc,
       EditorShortcuts,
       Div,
       Aside,
@@ -454,6 +456,7 @@ export function Editor({
         const n = sel.anchorNode;
         return Boolean(n && editor.view.dom.contains(n));
       },
+      isTargetEligible: (target) => editor.isEditable && editor.view.dom.contains(target),
     });
   }, [editor]);
 
@@ -679,6 +682,13 @@ function tiptapToolbarButtons(editor: TiptapEditor): ToolbarButton[] {
       label: "解除",
       title: "装飾を解除",
       action: () => applyHtmlAction(editor, "unlink"),
+    },
+    { type: "separator", contextOnly: true },
+    {
+      label: "目次",
+      title: "目次を挿入",
+      action: () => applyHtmlAction(editor, "toc"),
+      contextOnly: true,
     },
   ];
 }

@@ -4,6 +4,7 @@ import { attachImageResizer } from "@/lib/image-resize";
 import { isSingleUrl } from "@/lib/link-card";
 import { attachMarkdownInputRules, formatBlockPreservingAttrs } from "@/lib/md-input-rules";
 import { type ToolbarButton, attachSelectionToolbar } from "@/lib/selection-toolbar";
+import { TOC_SELECTOR, insertDomToc, stripTocEditingAttrs, syncDomTocs } from "@/lib/toc-dom";
 import {
   DEFAULT_IMAGE_WIDTH,
   extractImageFilesFromDataTransfer,
@@ -42,6 +43,7 @@ const INJECTED_ATTR_EXACT = new Set(["cz-shortcut-listen"]);
 function cleanBodyInnerHTML(body: HTMLElement): string {
   const clone = body.cloneNode(true) as HTMLElement;
   for (const el of clone.querySelectorAll(INJECTED_ELEMENT_SELECTOR)) el.remove();
+  stripTocEditingAttrs(clone);
   for (const el of clone.querySelectorAll<HTMLElement>("*")) {
     for (const name of el.getAttributeNames()) {
       if (INJECTED_ATTR.test(name) || INJECTED_ATTR_EXACT.has(name)) el.removeAttribute(name);
@@ -121,6 +123,9 @@ export function HtmlSource({
         }
         return (doc.doctype ? "<!DOCTYPE html>\n" : "") + doc.documentElement.outerHTML;
       };
+      // A saved TOC is a snapshot; refresh it against the headings as loaded
+      // (no edit is reported — like the WYSIWYG view, it rides the next save).
+      syncDomTocs(doc);
       lastEmittedRef.current = serialize();
       const onInput = () => {
         const html = serialize();
@@ -267,6 +272,28 @@ export function HtmlSource({
         buttons: buildToolbarButtons(doc, onInput),
         isEligible: () => true,
       });
+      // Keep TOCs current while headings are edited. Debounced; only a real
+      // change to a TOC or a heading id is reported as an edit.
+      const win = doc.defaultView;
+      let tocTimer = 0;
+      const tocObserver = new MutationObserver((records) => {
+        if (!win || !doc.querySelector(TOC_SELECTOR)) return;
+        const outsideToc = records.some((r) => {
+          const t =
+            r.target.nodeType === Node.ELEMENT_NODE
+              ? (r.target as Element)
+              : r.target.parentElement;
+          return !t?.closest(TOC_SELECTOR);
+        });
+        if (!outsideToc) return;
+        win.clearTimeout(tocTimer);
+        tocTimer = win.setTimeout(() => {
+          if (syncDomTocs(doc)) onInput();
+        }, 300);
+      });
+      if (doc.body) {
+        tocObserver.observe(doc.body, { childList: true, subtree: true, characterData: true });
+      }
       doc.addEventListener("input", onInput);
       doc.addEventListener("keydown", onKeyDown);
       doc.addEventListener("paste", onPaste);
@@ -276,6 +303,8 @@ export function HtmlSource({
         detachResizer();
         detachMdRules();
         detachToolbar();
+        tocObserver.disconnect();
+        win?.clearTimeout(tocTimer);
         doc.removeEventListener("input", onInput);
         doc.removeEventListener("keydown", onKeyDown);
         doc.removeEventListener("paste", onPaste);
@@ -589,6 +618,22 @@ function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
         emit();
       },
     },
+    // The TOC's look comes from the Chameleon theme; without it the list
+    // would render as a bare numbered list, so only offer it on themed pages.
+    ...(doc.querySelector('meta[name="chameleon"]')
+      ? ([
+          { type: "separator", contextOnly: true },
+          {
+            label: "目次",
+            title: "目次を挿入",
+            contextOnly: true,
+            action: () => {
+              insertDomToc(doc);
+              emit();
+            },
+          },
+        ] satisfies ToolbarButton[])
+      : []),
   ];
 }
 
