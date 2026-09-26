@@ -462,3 +462,22 @@ button {
   outline-offset: 3px;
   border-radius: var(--radius-md);
 }
+
+/* Table of contents block: selectable and movable like a card. Links scroll
+   the editor (toc-node.ts) rather than navigate. The empty hint is editor
+   only — a saved empty TOC just shows its title. */
+.tiptap.prose-canvas .toc {
+  cursor: grab;
+}
+.tiptap.prose-canvas .toc a {
+  cursor: pointer;
+}
+.tiptap.prose-canvas .toc.ProseMirror-selectednode {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+.tiptap.prose-canvas .toc-list:empty::before {
+  content: "見出し (h2 / h3) を追加すると、ここに目次が表示されます";
+  color: var(--text-subtle);
+  font-size: 0.9em;
+}
