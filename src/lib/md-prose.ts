@@ -102,11 +102,12 @@ const mdProseBaseTheme = EditorView.baseTheme({
     borderRadius: "0",
     fontSize: "1em",
   },
+  // Same link color as the theme's .prose-canvas a.
   ".cm-md-link": {
-    color: "var(--text)",
+    color: "color-mix(in srgb, var(--primary) 75%, var(--text))",
     textDecoration: "underline",
     textUnderlineOffset: "3px",
-    textDecorationColor: "var(--border-strong)",
+    textDecorationColor: "color-mix(in srgb, var(--primary) 40%, transparent)",
   },
   ".cm-md-bullet": {
     color: "var(--text-muted)",
