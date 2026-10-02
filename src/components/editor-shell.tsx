@@ -151,6 +151,33 @@ export function EditorShell({
     [dirty, file],
   );
 
+  // ⌘+click on a link to another note (link-open.ts). The href can point
+  // anywhere — outside every root, or at a file that doesn't exist — so ask
+  // the API first: selecting a path it refuses would leave the sidebar and
+  // the last-opened cookie pointing at nothing. Select the path the API
+  // reports, not the one built from the href: loadFile stores that one, and
+  // any spelling difference ("a//b.html") would make the load effect see
+  // file.path !== selected forever.
+  const openLinkedFile = useCallback(
+    async (p: string) => {
+      let resolved: string;
+      try {
+        const res = await fetch(`/api/file?path=${encodeURIComponent(p)}`);
+        const data = await res.json().catch(() => null);
+        if (!res.ok || typeof data?.path !== "string") {
+          toast.error(`リンク先を開けません: ${data?.error ?? res.status}`);
+          return;
+        }
+        resolved = data.path;
+      } catch (e) {
+        toast.error(String(e));
+        return;
+      }
+      await handleSelect(resolved);
+    },
+    [handleSelect],
+  );
+
   // A rename from the sidebar moves the same bytes to a new path, so the open
   // buffer is repointed rather than reloaded — unsaved edits survive, and a
   // later ⌘S writes to the new file instead of recreating the old one.
@@ -432,6 +459,7 @@ export function EditorShell({
                   void handleSave(html);
                 }}
                 path={file.path}
+                onOpenFile={openLinkedFile}
               />
             ) : (
               <Editor
@@ -441,6 +469,7 @@ export function EditorShell({
                 editable={file.editable}
                 path={file.path}
                 previewCss={file.previewCss}
+                onOpenFile={openLinkedFile}
               />
             )
           ) : (

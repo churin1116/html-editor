@@ -445,9 +445,9 @@ button {
   width: 100%;
 }
 
-/* Link card: a block you select and move, not text you edit. The anchor is
-   inert inside the editor (like every other link here — Link is configured
-   with openOnClick: false); the card opens when the saved file is read. */
+/* Link card: a block you select and move, not text you edit. A plain click
+   selects it (like every other link here — Link is configured with
+   openOnClick: false); ⌘+click opens it (link-open.ts). */
 .tiptap.prose-canvas .link-card {
   cursor: grab;
 }
@@ -461,6 +461,19 @@ button {
   outline: 2px solid var(--primary);
   outline-offset: 3px;
   border-radius: var(--radius-md);
+}
+
+/* While ⌘ is held, links and cards read as clickable: ⌘+click follows them. */
+[data-link-mod] .tiptap.prose-canvas a[href],
+[data-link-mod] .tiptap.prose-canvas .link-card {
+  cursor: pointer;
+}
+[data-link-mod] .tiptap.prose-canvas a[href]:hover {
+  text-decoration-color: currentColor;
+}
+[data-link-mod] .tiptap.prose-canvas .link-card:hover .link-card-body {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
 }
 
 /* Table of contents block: selectable and movable like a card. Links scroll

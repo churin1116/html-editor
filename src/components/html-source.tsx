@@ -2,6 +2,13 @@
 
 import { attachImageResizer } from "@/lib/image-resize";
 import { isSingleUrl } from "@/lib/link-card";
+import {
+  followLink,
+  isLinkOpenClick,
+  linkHrefAt,
+  resolveLinkHref,
+  trackLinkModifier,
+} from "@/lib/link-open";
 import { attachMarkdownInputRules, formatBlockPreservingAttrs } from "@/lib/md-input-rules";
 import { type ToolbarButton, attachSelectionToolbar } from "@/lib/selection-toolbar";
 import { TOC_SELECTOR, insertDomToc, stripTocEditingAttrs, syncDomTocs } from "@/lib/toc-dom";
@@ -31,11 +38,13 @@ function computeWrap(src: string): { prefix: string; suffix: string } | null {
 // or e.g. the copy buttons would duplicate on every reopen.
 //   - elements: our copy buttons, the image-resize overlay ([data-he-ui]),
 //     Grammarly's injected custom elements.
-//   - attributes: ad-filter / Grammarly / LanguageTool markers.
+//   - attributes: ad-filter / Grammarly / LanguageTool markers, and the
+//     Chameleon theme.js "tabs restored" flag — saved, it would disable the
+//     theme's flash-of-default-tab guard on every later open.
 const INJECTED_ELEMENT_SELECTOR =
   "button.copy-btn, [data-he-ui], grammarly-extension, grammarly-desktop-integration";
 const INJECTED_ATTR = /^(data-ab-filters|data-gr-|data-new-gr-|data-gramm|data-lt-)/i;
-const INJECTED_ATTR_EXACT = new Set(["cz-shortcut-listen"]);
+const INJECTED_ATTR_EXACT = new Set(["cz-shortcut-listen", "data-ch-ready"]);
 
 // Serialize the body's *authored* inner HTML — a clone with runtime-injected
 // nodes/attributes stripped — so saves stay clean even with page scripts and
@@ -70,11 +79,14 @@ export function HtmlSource({
   onChange,
   onSave,
   path,
+  onOpenFile,
 }: {
   content: string;
   onChange: (html: string) => void;
   onSave?: (html: string) => void;
   path?: string;
+  // ⌘+click on a link to another .html/.md opens it here (link-open.ts).
+  onOpenFile?: (path: string) => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const contentRef = useRef(content);
@@ -88,6 +100,8 @@ export function HtmlSource({
   onChangeRef.current = onChange;
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
+  const onOpenFileRef = useRef(onOpenFile);
+  onOpenFileRef.current = onOpenFile;
   const reloadRef = useRef<(html: string) => void>(() => {});
   // The original document's wrapper (everything up to and including <body ...>,
   // and from </body> on). Captured from the source we load so saves keep the
@@ -97,7 +111,8 @@ export function HtmlSource({
 
   // Set up the iframe once per file (path). Reading content via refs keeps the
   // listeners stable so keystrokes never tear down and re-attach them.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally keyed on `path` so the document reloads only when the open file changes, not on every keystroke.
+  // Keyed on `path` alone, so the document reloads only when the open file
+  // changes, not on every keystroke.
   useEffect(() => {
     const iframe = iframeRef.current;
     if (!iframe) return;
@@ -131,6 +146,14 @@ export function HtmlSource({
         const html = serialize();
         lastEmittedRef.current = html;
         onChangeRef.current(html);
+      };
+      // Form controls fire `input` too — e.g. a Chameleon tab radio when its
+      // label is clicked. Their state is a property innerHTML never carries,
+      // so switching tabs is viewing, not editing: don't mark the file dirty.
+      const onDocInput = (e: Event) => {
+        const tag = (e.target as Element | null)?.tagName;
+        if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+        onInput();
       };
       // Keyboard shortcuts. designMode gives us ⌘B/⌘I/⌘U/⌘Z for free, but
       // Chrome's bold/italic produce <b>/<i> while the toolbar normalizes them
@@ -294,7 +317,35 @@ export function HtmlSource({
       if (doc.body) {
         tocObserver.observe(doc.body, { childList: true, subtree: true, characterData: true });
       }
-      doc.addEventListener("input", onInput);
+      // ⌘+click follows a link or link card; a plain click keeps editing it.
+      // Capture phase, ahead of the page's own click handlers (copy buttons…).
+      const onLinkClick = (e: MouseEvent) => {
+        if (!isLinkOpenClick(e)) return;
+        const href = linkHrefAt(e.target);
+        if (!href) return;
+        e.preventDefault();
+        e.stopPropagation();
+        followLink(resolveLinkHref(href, path), {
+          root: doc,
+          openFile: onOpenFileRef.current,
+        });
+      };
+      // While ⌘ is held, links show as clickable. A constructed sheet lives
+      // outside the DOM, so it can't end up in a save (⌘S holds ⌘ too).
+      const linkModSheet = win ? new win.CSSStyleSheet() : null;
+      if (linkModSheet) {
+        linkModSheet.replaceSync(
+          "a[href], [data-link-card] { cursor: pointer; } a[href]:hover { text-decoration-color: currentColor; }",
+        );
+        linkModSheet.disabled = true;
+        doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, linkModSheet];
+      }
+      const detachLinkMod = trackLinkModifier(doc, (held) => {
+        if (linkModSheet) linkModSheet.disabled = !held;
+      });
+      doc.addEventListener("input", onDocInput);
+      doc.addEventListener("click", onLinkClick, true);
+      doc.addEventListener("click", switchChameleonTab);
       doc.addEventListener("keydown", onKeyDown);
       doc.addEventListener("paste", onPaste);
       doc.addEventListener("dragover", onDragOver);
@@ -305,7 +356,10 @@ export function HtmlSource({
         detachToolbar();
         tocObserver.disconnect();
         win?.clearTimeout(tocTimer);
-        doc.removeEventListener("input", onInput);
+        detachLinkMod();
+        doc.removeEventListener("input", onDocInput);
+        doc.removeEventListener("click", onLinkClick, true);
+        doc.removeEventListener("click", switchChameleonTab);
         doc.removeEventListener("keydown", onKeyDown);
         doc.removeEventListener("paste", onPaste);
         doc.removeEventListener("dragover", onDragOver);
@@ -353,6 +407,29 @@ export function HtmlSource({
       />
     </div>
   );
+}
+
+// Chameleon tabs (.tabs > N radios + nav.tab-list of label[for] + .tab-panels).
+// A native label click does switch the tab, but it also moves focus onto the
+// hidden radio — the caret the click just put in the label text goes dead,
+// keystrokes land on the radio and arrow keys flip tabs. So the label's
+// activation is cancelled and the radio is checked by hand: the tab switches
+// and the label text stays editable. A shift-click or a drag across the
+// label is text selection, not a tab switch.
+function switchChameleonTab(e: MouseEvent) {
+  const label = (e.target as Element | null)?.closest<HTMLLabelElement>(
+    ".tabs > .tab-list > label",
+  );
+  if (!label) return;
+  e.preventDefault();
+  if (e.shiftKey || !label.ownerDocument.getSelection()?.isCollapsed) return;
+  const radio = label.control as HTMLInputElement | null;
+  if (radio?.type !== "radio" || radio.checked) return;
+  if (radio.parentElement !== label.parentElement?.parentElement) return;
+  radio.checked = true;
+  // theme.js's data-persist remembers the selected tab on `change`.
+  const win = label.ownerDocument.defaultView;
+  if (win) radio.dispatchEvent(new win.Event("change", { bubbles: true }));
 }
 
 // Chrome's inline execCommands emit presentational tags (<b>/<i>/<strike>).
