@@ -7,7 +7,14 @@ import {
 } from "@/lib/speech";
 import { type Editor, Node, mergeAttributes } from "@tiptap/core";
 import type { DOMOutputSpec, Node as PmNode, ResolvedPos } from "@tiptap/pm/model";
-import { NodeSelection, Plugin, Selection, TextSelection } from "@tiptap/pm/state";
+import {
+  type EditorState,
+  NodeSelection,
+  Plugin,
+  Selection,
+  TextSelection,
+} from "@tiptap/pm/state";
+import type { EditorView } from "@tiptap/pm/view";
 
 // Speech bubble block (markup and rationale in speech.ts). The bubble text
 // and the speaker's name are ordinary editable content — the name is typed in
@@ -43,14 +50,45 @@ function outerSpeechDepth($pos: ResolvedPos): number {
   return -1;
 }
 
-function isEmptySpeech(node: PmNode): boolean {
+function hasEmptyBubble(node: PmNode): boolean {
   const bubble = node.lastChild;
   return (
-    node.firstChild?.content.size === 0 &&
     bubble?.childCount === 1 &&
     Boolean(bubble.firstChild?.isTextblock) &&
     bubble.firstChild?.content.size === 0
   );
+}
+
+// Takes a bubble out, leaving an empty line with the caret on it — the way
+// an empty list item or quote turns back into a paragraph, so the bubble
+// goes with one key and its line with the next.
+function replaceSpeechWithParagraph(
+  view: EditorView,
+  state: EditorState,
+  speechPos: number,
+  speech: PmNode,
+) {
+  const tr = state.tr.replaceWith(
+    speechPos,
+    speechPos + speech.nodeSize,
+    state.schema.nodes.paragraph.create(),
+  );
+  tr.setSelection(TextSelection.create(tr.doc, speechPos + 1));
+  view.dispatch(tr.scrollIntoView());
+}
+
+// Backspace / Delete with the caret in a bubble that has no text yet: the
+// bubble goes. Only for a single empty paragraph — with more lines, the keys
+// first remove the empty ones as usual.
+function deleteEmptyBubble(view: EditorView, state: EditorState): boolean {
+  const { selection } = state;
+  if (!selection.empty) return false;
+  const { $from } = selection;
+  if ($from.depth < 3 || $from.node(-1).type.name !== "speechBubble") return false;
+  const speech = $from.node(-2);
+  if (!hasEmptyBubble(speech)) return false;
+  replaceSpeechWithParagraph(view, state, $from.before(-2), speech);
+  return true;
 }
 
 export const SpeechName = Node.create({
@@ -289,11 +327,13 @@ export const Speech = Node.create({
         view.dispatch(tr.scrollIntoView());
         return true;
       },
+      // In a bubble with no text yet: the bubble goes (deleteEmptyBubble).
       // At the very start of a bubble: back into the name rather than a join
       // across the two. At the start of the name: an empty bubble goes away,
       // anything else is selected whole, so a second Backspace deletes it.
       Backspace: ({ editor }) => {
         const { state, view } = editor;
+        if (deleteEmptyBubble(view, state)) return true;
         const { selection } = state;
         if (!selection.empty) return false;
         const { $from } = selection;
@@ -301,14 +341,8 @@ export const Speech = Node.create({
         if ($from.parent.type.name === "speechName") {
           const speechPos = $from.before(-1);
           const speech = $from.node(-1);
-          if (isEmptySpeech(speech)) {
-            const tr = state.tr.replaceWith(
-              speechPos,
-              speechPos + speech.nodeSize,
-              state.schema.nodes.paragraph.create(),
-            );
-            tr.setSelection(TextSelection.create(tr.doc, speechPos + 1));
-            view.dispatch(tr);
+          if (speech.firstChild?.content.size === 0 && hasEmptyBubble(speech)) {
+            replaceSpeechWithParagraph(view, state, speechPos, speech);
           } else {
             view.dispatch(state.tr.setSelection(NodeSelection.create(state.doc, speechPos)));
           }
@@ -325,9 +359,11 @@ export const Speech = Node.create({
         }
         return false;
       },
+      // In a bubble with no text yet: the bubble goes, as with Backspace.
       // At the end of the name: on into the bubble, not a join.
       Delete: ({ editor }) => {
         const { state, view } = editor;
+        if (deleteEmptyBubble(view, state)) return true;
         const { selection } = state;
         if (!selection.empty) return false;
         const { $from } = selection;

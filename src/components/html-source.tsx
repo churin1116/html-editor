@@ -15,6 +15,7 @@ import { attachSpeechMenu } from "@/lib/speech";
 import {
   SPEECH_EDITING_CSS,
   domSpeechActions,
+  handleSpeechDelete,
   handleSpeechEnter,
   insertDomSpeech,
   prepareDomSpeeches,
@@ -179,9 +180,14 @@ export function HtmlSource({
       const onKeyDown = (e: KeyboardEvent) => {
         if (e.isComposing) return;
         // Speech bubbles: Enter in the name moves on to the bubble, a second
-        // Enter on an empty last line leaves it.
+        // Enter on an empty last line leaves it; Backspace / Delete in a
+        // bubble with no text removes it.
         const plain = !(e.shiftKey || e.metaKey || e.ctrlKey || e.altKey);
-        if (e.key === "Enter" && plain && handleSpeechEnter(doc)) {
+        const handled =
+          plain &&
+          ((e.key === "Enter" && handleSpeechEnter(doc)) ||
+            ((e.key === "Backspace" || e.key === "Delete") && handleSpeechDelete(doc)));
+        if (handled) {
           e.preventDefault();
           onInput();
           return;

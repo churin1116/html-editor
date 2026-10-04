@@ -164,6 +164,36 @@ export function handleSpeechEnter(doc: Document): boolean {
   return true;
 }
 
+// Takes a bubble out, leaving an empty line with the caret on it (as in the
+// TipTap view). Through the editing engine rather than speech.remove(), so
+// it lands on the undo stack and ⌘Z brings the bubble back. An empty line
+// rather than nothing: Chrome's "delete" of a whole block also merges the
+// blocks on either side of it.
+function replaceWithEmptyLine(doc: Document, speech: Element) {
+  const sel = doc.getSelection();
+  if (!sel) return;
+  const range = doc.createRange();
+  range.selectNode(speech);
+  sel.removeAllRanges();
+  sel.addRange(range);
+  doc.execCommand("insertHTML", false, "<p><br></p>");
+}
+
+// Backspace / Delete with the caret in a bubble that has no text yet: the
+// bubble goes. Only for a single empty line — with more lines, the keys
+// first remove the empty ones as usual. Returns true when it handled the key.
+export function handleSpeechDelete(doc: Document): boolean {
+  if (!doc.getSelection()?.isCollapsed) return false;
+  const bubble = elementAtCaret(doc)?.closest(`${SPEECH_SELECTOR} .speech-bubble`);
+  const speech = bubble?.closest(SPEECH_SELECTOR);
+  if (!bubble || !speech) return false;
+  if (bubble.childElementCount > 1 || bubble.textContent?.trim() || bubble.querySelector("img")) {
+    return false;
+  }
+  replaceWithEmptyLine(doc, speech);
+  return true;
+}
+
 // Typing in a bubble makes its speaker the one the next bubble starts as.
 export function rememberSpeechAtCaret(doc: Document): void {
   const speech = elementAtCaret(doc)?.closest(SPEECH_SELECTOR);
@@ -189,18 +219,8 @@ export function domSpeechActions(doc: Document, emit: () => void): SpeechMenuAct
       setSide(speech, speech.getAttribute("data-side") === "right" ? "left" : "right");
       emit();
     },
-    // Through the editing engine rather than speech.remove(), so it lands
-    // on the undo stack and ⌘Z brings the bubble back. Replaced by an empty
-    // line rather than deleted: Chrome's "delete" of a whole block also
-    // merges the blocks on either side of it.
     remove: (speech) => {
-      const sel = doc.getSelection();
-      if (!sel) return;
-      const range = doc.createRange();
-      range.selectNode(speech);
-      sel.removeAllRanges();
-      sel.addRange(range);
-      doc.execCommand("insertHTML", false, "<p><br></p>");
+      replaceWithEmptyLine(doc, speech);
       emit();
     },
   };
