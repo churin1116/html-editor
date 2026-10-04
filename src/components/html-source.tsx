@@ -11,6 +11,17 @@ import {
 } from "@/lib/link-open";
 import { attachMarkdownInputRules, formatBlockPreservingAttrs } from "@/lib/md-input-rules";
 import { type ToolbarButton, attachSelectionToolbar } from "@/lib/selection-toolbar";
+import { attachSpeechMenu } from "@/lib/speech";
+import {
+  SPEECH_EDITING_CSS,
+  domSpeechActions,
+  handleSpeechDelete,
+  handleSpeechEnter,
+  insertDomSpeech,
+  prepareDomSpeeches,
+  rememberSpeechAtCaret,
+  stripSpeechEditingAttrs,
+} from "@/lib/speech-dom";
 import { TOC_SELECTOR, insertDomToc, stripTocEditingAttrs, syncDomTocs } from "@/lib/toc-dom";
 import {
   DEFAULT_IMAGE_WIDTH,
@@ -53,6 +64,7 @@ function cleanBodyInnerHTML(body: HTMLElement): string {
   const clone = body.cloneNode(true) as HTMLElement;
   for (const el of clone.querySelectorAll(INJECTED_ELEMENT_SELECTOR)) el.remove();
   stripTocEditingAttrs(clone);
+  stripSpeechEditingAttrs(clone);
   for (const el of clone.querySelectorAll<HTMLElement>("*")) {
     for (const name of el.getAttributeNames()) {
       if (INJECTED_ATTR.test(name) || INJECTED_ATTR_EXACT.has(name)) el.removeAttribute(name);
@@ -141,6 +153,7 @@ export function HtmlSource({
       // A saved TOC is a snapshot; refresh it against the headings as loaded
       // (no edit is reported — like the WYSIWYG view, it rides the next save).
       syncDomTocs(doc);
+      prepareDomSpeeches(doc);
       lastEmittedRef.current = serialize();
       const onInput = () => {
         const html = serialize();
@@ -153,6 +166,7 @@ export function HtmlSource({
       const onDocInput = (e: Event) => {
         const tag = (e.target as Element | null)?.tagName;
         if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+        rememberSpeechAtCaret(doc);
         onInput();
       };
       // Keyboard shortcuts. designMode gives us ⌘B/⌘I/⌘U/⌘Z for free, but
@@ -165,6 +179,19 @@ export function HtmlSource({
       const cmd = docCommands(doc, onInput);
       const onKeyDown = (e: KeyboardEvent) => {
         if (e.isComposing) return;
+        // Speech bubbles: Enter in the name moves on to the bubble, a second
+        // Enter on an empty last line leaves it; Backspace / Delete in a
+        // bubble with no text removes it.
+        const plain = !(e.shiftKey || e.metaKey || e.ctrlKey || e.altKey);
+        const handled =
+          plain &&
+          ((e.key === "Enter" && handleSpeechEnter(doc)) ||
+            ((e.key === "Backspace" || e.key === "Delete") && handleSpeechDelete(doc)));
+        if (handled) {
+          e.preventDefault();
+          onInput();
+          return;
+        }
         if (!(e.metaKey || e.ctrlKey)) return;
         const key = e.key.toLowerCase();
 
@@ -284,7 +311,8 @@ export function HtmlSource({
       // which serializes straight into the saved body).
       const detachResizer = attachImageResizer({
         doc,
-        isTarget: () => true,
+        // A speech bubble's avatar is sized by the theme, not by hand.
+        isTarget: (img) => !img.closest(".speech-avatar"),
         onResizeEnd: () => onInput(),
       });
       // Markdown-style typing shortcuts ("### " → <h3>, "**b**" → <strong>…).
@@ -343,6 +371,18 @@ export function HtmlSource({
       const detachLinkMod = trackLinkModifier(doc, (held) => {
         if (linkModSheet) linkModSheet.disabled = !held;
       });
+      // Speech bubbles: the avatar menu, plus editing aids (a placeholder for
+      // an empty name) in a constructed sheet, which no save can pick up.
+      const detachSpeechMenu = attachSpeechMenu({
+        doc,
+        isTarget: () => true,
+        actions: domSpeechActions(doc, onInput),
+      });
+      if (win) {
+        const speechSheet = new win.CSSStyleSheet();
+        speechSheet.replaceSync(SPEECH_EDITING_CSS);
+        doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, speechSheet];
+      }
       doc.addEventListener("input", onDocInput);
       doc.addEventListener("click", onLinkClick, true);
       doc.addEventListener("click", switchChameleonTab);
@@ -357,6 +397,7 @@ export function HtmlSource({
         tocObserver.disconnect();
         win?.clearTimeout(tocTimer);
         detachLinkMod();
+        detachSpeechMenu();
         doc.removeEventListener("input", onDocInput);
         doc.removeEventListener("click", onLinkClick, true);
         doc.removeEventListener("click", switchChameleonTab);
@@ -695,8 +736,9 @@ function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
         emit();
       },
     },
-    // The TOC's look comes from the Chameleon theme; without it the list
-    // would render as a bare numbered list, so only offer it on themed pages.
+    // The TOC's and the speech bubble's look comes from the Chameleon theme;
+    // without it they would render as a bare numbered list / stacked divs, so
+    // only offer them on themed pages.
     ...(doc.querySelector('meta[name="chameleon"]')
       ? ([
           { type: "separator", contextOnly: true },
@@ -706,6 +748,15 @@ function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
             contextOnly: true,
             action: () => {
               insertDomToc(doc);
+              emit();
+            },
+          },
+          {
+            label: "吹き出し",
+            title: "吹き出しを挿入",
+            contextOnly: true,
+            action: () => {
+              insertDomSpeech(doc);
               emit();
             },
           },
