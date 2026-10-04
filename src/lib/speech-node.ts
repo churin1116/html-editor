@@ -341,8 +341,8 @@ export const Speech = Node.create({
   },
 });
 
-// The avatar menu's actions for the TipTap editor. Icon and side apply to
-// every bubble with the same name (speech.ts), delete to this one only.
+// The avatar menu's actions for the TipTap editor, each on the clicked
+// bubble only (speech.ts).
 export function tiptapSpeechActions(editor: Editor): SpeechMenuActions {
   const locate = (el: HTMLElement): number => {
     let found = -1;
@@ -352,16 +352,6 @@ export function tiptapSpeechActions(editor: Editor): SpeechMenuActions {
       return true;
     });
     return found;
-  };
-  const sameSpeaker = (pos: number): number[] => {
-    const name = speakerOf(editor.state.doc.nodeAt(pos) as PmNode).name;
-    if (!name) return [pos];
-    const out: number[] = [];
-    editor.state.doc.descendants((node, p) => {
-      if (node.type.name === "speech" && speakerOf(node).name === name) out.push(p);
-      return true;
-    });
-    return out;
   };
   return {
     setSpeaker: (el, speaker) => {
@@ -385,17 +375,13 @@ export function tiptapSpeechActions(editor: Editor): SpeechMenuActions {
     setAvatar: (el, url) => {
       const pos = locate(el);
       if (pos < 0) return;
-      const tr = editor.state.tr;
-      for (const p of sameSpeaker(pos)) tr.setNodeAttribute(p, "avatar", url);
-      editor.view.dispatch(tr);
+      editor.view.dispatch(editor.state.tr.setNodeAttribute(pos, "avatar", url));
     },
     swapSide: (el) => {
       const pos = locate(el);
       if (pos < 0) return;
       const side = editor.state.doc.nodeAt(pos)?.attrs.side === "right" ? "left" : "right";
-      const tr = editor.state.tr;
-      for (const p of sameSpeaker(pos)) tr.setNodeAttribute(p, "side", side);
-      editor.view.dispatch(tr);
+      editor.view.dispatch(editor.state.tr.setNodeAttribute(pos, "side", side));
     },
     remove: (el) => {
       const pos = locate(el);

@@ -20,17 +20,18 @@ import { toast } from "sonner";
 // is the only copy of the URL, and alt="" makes a failed load show the
 // theme's silhouette instead of a broken-image glyph.
 //
-// Icon and side belong to the speaker, not the single bubble: changing them
-// from the menu applies to every bubble with the same (non-empty) name, so an
-// interview's icons are set once per person.
+// Changes from the menu (icon, side) apply to the clicked bubble only. A new
+// bubble starts as the previous speaker, so one meant for someone else still
+// carries that person's name until it is retyped; reaching every bubble of
+// that name from it would rewrite the earlier ones.
 //
 // Speakers are also remembered in this browser (localStorage — nothing leaves
 // the machine): a new bubble starts as the speaker last worked on, in any
 // file, and name + icon pairs are kept as saved speakers the menu offers to
-// switch to, one per name. Typing only moves "last worked on"; a pair is
-// saved when it is set from the menu or when a new bubble starts from it,
-// so a name typed a letter at a time never leaves its half-typed stages in
-// the list.
+// switch to, one per name. Typing and menu changes only move "last worked
+// on"; the pair is saved when a new bubble starts from it — by then it is
+// settled, whatever order the icon and the name were changed in, and no
+// half-typed name or borrowed name ends up in the list.
 
 export const SPEECH_SELECTOR = "[data-speech]";
 const AVATAR_SELECTOR = `${SPEECH_SELECTOR} > .speech-avatar`;
@@ -94,14 +95,17 @@ export function rememberSpeakerSoon(speaker: Speaker): void {
   pendingTimer = setTimeout(flushPending, 600);
 }
 
-// Makes `speaker` the last worked on and, when it has both a name and an
-// icon, (re)saves it at the head of the list. Supersedes any pending typing:
-// a menu change to one bubble redraws the document, which the typing watch
-// would otherwise credit to whichever bubble holds the caret.
-function rememberSpeaker(speaker: Speaker): void {
+// Makes `speaker` the last worked on. Supersedes any pending typing: a menu
+// change to one bubble redraws the document, which the typing watch would
+// otherwise credit to whichever bubble holds the caret.
+function noteLastSpeaker(speaker: Speaker): void {
   clearTimeout(pendingTimer);
   pending = null;
   writeStore(LAST_KEY, speaker);
+}
+
+// (Re)saves a speaker with both a name and an icon at the head of the list.
+function saveSpeaker(speaker: Speaker): void {
   if (!speaker.name || !speaker.avatar) return;
   const rest = savedSpeakers().filter((s) => s.name !== speaker.name);
   writeStore(SAVED_KEY, [speaker, ...rest].slice(0, MAX_SAVED));
@@ -120,7 +124,7 @@ export function speakerForNewBubble(): Speaker {
   flushPending();
   const last = readStore(LAST_KEY);
   const speaker = isSpeaker(last) ? last : BLANK;
-  rememberSpeaker(speaker);
+  saveSpeaker(speaker);
   return speaker;
 }
 
@@ -169,11 +173,11 @@ export function attachSpeechMenu(opts: {
     menuAvatar = null;
   };
 
-  // A change made from the menu makes the bubble's speaker the remembered
-  // one. Both editors have redrawn the bubble by the time `run` returns.
+  // A change made from the menu makes the bubble's speaker the last worked
+  // on. Both editors have redrawn the bubble by the time `run` returns.
   const act = (speech: HTMLElement, run: () => void) => {
     run();
-    if (speech.isConnected) rememberSpeaker(speakerFromDom(speech));
+    if (speech.isConnected) noteLastSpeaker(speakerFromDom(speech));
   };
 
   const avatarAt = (target: EventTarget | null): HTMLElement | null => {
@@ -311,7 +315,6 @@ export function attachSpeechMenu(opts: {
       for (const s of saved) speakerRow(s);
       separator();
     }
-    if (name) caption(`「${name}」の吹き出しすべてに反映`);
     item("画像をアップロード…", () => pickFile(speech));
     item("画像の URL を指定…", () => void askUrl(speech, current));
     if (current) item("アイコンを外す", () => act(speech, () => actions.setAvatar(speech, null)));

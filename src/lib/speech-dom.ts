@@ -16,7 +16,6 @@ import {
   rememberSpeakerSoon,
   speakerForNewBubble,
   speakerFromDom,
-  speechNameOf,
 } from "@/lib/speech";
 
 export const SPEECH_EDITING_CSS = `
@@ -46,15 +45,6 @@ function setAvatar(speech: HTMLElement, url: string | null) {
 function setSide(speech: HTMLElement, side: SpeechSide) {
   if (side === "right") speech.setAttribute("data-side", "right");
   else speech.removeAttribute("data-side");
-}
-
-// Every bubble sharing this one's name (just this one when it has none).
-function sameSpeaker(doc: Document, speech: HTMLElement): HTMLElement[] {
-  const name = speechNameOf(speech);
-  if (!name) return [speech];
-  return Array.from(doc.querySelectorAll<HTMLElement>(SPEECH_SELECTOR)).filter(
-    (s) => speechNameOf(s) === name,
-  );
 }
 
 // Make every avatar uneditable — on load, and for a bubble just inserted.
@@ -180,8 +170,8 @@ export function rememberSpeechAtCaret(doc: Document): void {
   if (speech) rememberSpeakerSoon(speakerFromDom(speech));
 }
 
-// The avatar menu's actions for a designMode document. Icon and side apply
-// to every bubble with the same name (speech.ts), delete to this one only.
+// The avatar menu's actions for a designMode document, each on the clicked
+// bubble only (speech.ts).
 export function domSpeechActions(doc: Document, emit: () => void): SpeechMenuActions {
   return {
     setSpeaker: (speech, speaker) => {
@@ -192,12 +182,11 @@ export function domSpeechActions(doc: Document, emit: () => void): SpeechMenuAct
       emit();
     },
     setAvatar: (speech, url) => {
-      for (const s of sameSpeaker(doc, speech)) setAvatar(s, url);
+      setAvatar(speech, url);
       emit();
     },
     swapSide: (speech) => {
-      const side: SpeechSide = speech.getAttribute("data-side") === "right" ? "left" : "right";
-      for (const s of sameSpeaker(doc, speech)) setSide(s, side);
+      setSide(speech, speech.getAttribute("data-side") === "right" ? "left" : "right");
       emit();
     },
     // Through the editing engine rather than speech.remove(), so it lands
