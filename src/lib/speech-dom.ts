@@ -11,10 +11,11 @@
 
 import {
   SPEECH_SELECTOR,
-  type Speaker,
   type SpeechMenuActions,
   type SpeechSide,
-  pickNextSpeaker,
+  rememberSpeakerSoon,
+  speakerForNewBubble,
+  speakerFromDom,
   speechNameOf,
 } from "@/lib/speech";
 
@@ -28,14 +29,6 @@ export const SPEECH_EDITING_CSS = `
 const LIST_ITEM = "li, dt, dd, td, th";
 const LIST_BLOCK = "ul, ol, dl, table";
 const BLOCK = "p, h1, h2, h3, h4, h5, h6, pre, blockquote, figure, details, hr";
-
-function speakerOf(el: HTMLElement): Speaker {
-  return {
-    name: speechNameOf(el),
-    avatar: el.querySelector(":scope > .speech-avatar img")?.getAttribute("src") || null,
-    side: el.getAttribute("data-side") === "right" ? "right" : "left",
-  };
-}
 
 function setAvatar(speech: HTMLElement, url: string | null) {
   const avatar = speech.querySelector<HTMLElement>(":scope > .speech-avatar");
@@ -74,9 +67,9 @@ export function prepareDomSpeeches(doc: Document): void {
 // Insert a bubble beside the block holding the caret, by the same rule as
 // insertDomToc (an empty paragraph is replaced, a list/table item puts it
 // after the whole list/table, anything else goes right after the block) —
-// and after the enclosing bubble when the caret is in one. The speaker
-// alternates (pickNextSpeaker); the caret lands in the bubble when the name
-// is already known, in the name otherwise.
+// and after the enclosing bubble when the caret is in one. The speaker is
+// the one last worked on (speech.ts); the caret lands in the bubble when the
+// name is already known, in the name otherwise.
 export function insertDomSpeech(doc: Document): void {
   const speech = doc.createElement("div");
   speech.className = "speech";
@@ -123,10 +116,7 @@ export function insertDomSpeech(doc: Document): void {
     doc.body.appendChild(speech);
   }
 
-  const previous = Array.from(doc.querySelectorAll<HTMLElement>(SPEECH_SELECTOR))
-    .filter((s) => s.compareDocumentPosition(speech) & Node.DOCUMENT_POSITION_FOLLOWING)
-    .map(speakerOf);
-  const speaker = pickNextSpeaker(previous);
+  const speaker = speakerForNewBubble();
   setSide(speech, speaker.side);
   setAvatar(speech, speaker.avatar);
   name.textContent = speaker.name;
@@ -140,32 +130,67 @@ export function insertDomSpeech(doc: Document): void {
   speech.scrollIntoView({ block: "nearest" });
 }
 
-// Enter in a bubble's name moves on to the bubble instead of breaking the
-// name into lines. Returns true when it handled the key.
-export function handleSpeechNameEnter(doc: Document): boolean {
+function elementAtCaret(doc: Document): Element | null {
+  const node = doc.getSelection()?.anchorNode;
+  if (!node) return null;
+  return node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
+}
+
+function placeCaret(doc: Document, at: Node) {
   const sel = doc.getSelection();
-  const node = sel?.anchorNode;
-  const el = node
-    ? node.nodeType === Node.ELEMENT_NODE
-      ? (node as Element)
-      : node.parentElement
-    : null;
-  const name = el?.closest(`${SPEECH_SELECTOR} .speech-name`);
-  const bubble = name?.parentElement?.querySelector(":scope > .speech-bubble");
-  if (!sel || !bubble) return false;
-  const first = bubble.firstElementChild ?? bubble;
+  if (!sel) return;
   const r = doc.createRange();
-  r.setStart(first, 0);
+  r.setStart(at, 0);
   r.collapse(true);
   sel.removeAllRanges();
   sel.addRange(r);
+}
+
+// Enter in a bubble's name moves on to the bubble instead of breaking the
+// name into lines; Enter on an empty last paragraph of a bubble that has
+// more than one leaves the bubble, as in the TipTap view. Returns true when
+// it handled the key.
+export function handleSpeechEnter(doc: Document): boolean {
+  if (!doc.getSelection()?.isCollapsed) return false;
+  const el = elementAtCaret(doc);
+  const name = el?.closest(`${SPEECH_SELECTOR} .speech-name`);
+  if (name) {
+    const bubble = name.parentElement?.querySelector(":scope > .speech-bubble");
+    if (!bubble) return false;
+    placeCaret(doc, bubble.firstElementChild ?? bubble);
+    return true;
+  }
+  const p = el?.closest("p");
+  const bubble = p?.parentElement;
+  const speech = bubble?.closest(SPEECH_SELECTOR);
+  if (!p || !bubble?.matches(".speech-bubble") || !speech) return false;
+  if (p.textContent?.trim() || p.querySelector("img")) return false;
+  if (bubble.lastElementChild !== p || bubble.childElementCount < 2) return false;
+  p.remove();
+  const next = doc.createElement("p");
+  next.appendChild(doc.createElement("br"));
+  speech.after(next);
+  placeCaret(doc, next);
   return true;
+}
+
+// Typing in a bubble makes its speaker the one the next bubble starts as.
+export function rememberSpeechAtCaret(doc: Document): void {
+  const speech = elementAtCaret(doc)?.closest(SPEECH_SELECTOR);
+  if (speech) rememberSpeakerSoon(speakerFromDom(speech));
 }
 
 // The avatar menu's actions for a designMode document. Icon and side apply
 // to every bubble with the same name (speech.ts), delete to this one only.
 export function domSpeechActions(doc: Document, emit: () => void): SpeechMenuActions {
   return {
+    setSpeaker: (speech, speaker) => {
+      const name = speech.querySelector(":scope > .speech-body > .speech-name");
+      if (name) name.textContent = speaker.name;
+      setAvatar(speech, speaker.avatar);
+      setSide(speech, speaker.side);
+      emit();
+    },
     setAvatar: (speech, url) => {
       for (const s of sameSpeaker(doc, speech)) setAvatar(s, url);
       emit();
@@ -175,8 +200,18 @@ export function domSpeechActions(doc: Document, emit: () => void): SpeechMenuAct
       for (const s of sameSpeaker(doc, speech)) setSide(s, side);
       emit();
     },
+    // Through the editing engine rather than speech.remove(), so it lands
+    // on the undo stack and ⌘Z brings the bubble back. Replaced by an empty
+    // line rather than deleted: Chrome's "delete" of a whole block also
+    // merges the blocks on either side of it.
     remove: (speech) => {
-      speech.remove();
+      const sel = doc.getSelection();
+      if (!sel) return;
+      const range = doc.createRange();
+      range.selectNode(speech);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      doc.execCommand("insertHTML", false, "<p><br></p>");
       emit();
     },
   };

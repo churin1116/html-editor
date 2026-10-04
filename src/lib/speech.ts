@@ -18,11 +18,19 @@ import { toast } from "sonner";
 // The look comes from the Chameleon theme (theme.css, [data-speech]), so a
 // saved file renders it with no script. The avatar is a plain <img>: its src
 // is the only copy of the URL, and alt="" makes a failed load show the
-// theme's empty circle instead of a broken-image glyph.
+// theme's silhouette instead of a broken-image glyph.
 //
 // Icon and side belong to the speaker, not the single bubble: changing them
 // from the menu applies to every bubble with the same (non-empty) name, so an
 // interview's icons are set once per person.
+//
+// Speakers are also remembered in this browser (localStorage — nothing leaves
+// the machine): a new bubble starts as the speaker last worked on, in any
+// file, and name + icon pairs are kept as saved speakers the menu offers to
+// switch to, one per name. Typing only moves "last worked on"; a pair is
+// saved when it is set from the menu or when a new bubble starts from it,
+// so a name typed a letter at a time never leaves its half-typed stages in
+// the list.
 
 export const SPEECH_SELECTOR = "[data-speech]";
 const AVATAR_SELECTOR = `${SPEECH_SELECTOR} > .speech-avatar`;
@@ -34,41 +42,114 @@ export type Speaker = { name: string; avatar: string | null; side: SpeechSide };
 // its own duration or it never goes away.
 const TOAST_MS = 4000;
 
-function speakerKey(s: Speaker): string {
-  if (s.name) return `n:${s.name}`;
-  if (s.avatar) return `a:${s.avatar}`;
-  return `s:${s.side}`;
+const LAST_KEY = "htmlEditor.speechLastSpeaker";
+const SAVED_KEY = "htmlEditor.speechSpeakers";
+const MAX_SAVED = 12;
+const BLANK: Speaker = { name: "", avatar: null, side: "left" };
+
+function isSpeaker(v: unknown): v is Speaker {
+  if (!v || typeof v !== "object") return false;
+  const s = v as Record<string, unknown>;
+  return (
+    typeof s.name === "string" &&
+    (s.avatar === null || typeof s.avatar === "string") &&
+    (s.side === "left" || s.side === "right")
+  );
 }
 
-// Who speaks in a newly inserted bubble, given the bubbles before it in
-// document order. Interviews alternate, so it is whoever spoke before the
-// latest speaker; with only one speaker so far, a new unnamed one on the
-// other side; with none, an unnamed one on the left.
-export function pickNextSpeaker(previous: Speaker[]): Speaker {
-  const last = previous.at(-1);
-  if (!last) return { name: "", avatar: null, side: "left" };
-  const lastKey = speakerKey(last);
-  for (let i = previous.length - 2; i >= 0; i--) {
-    if (speakerKey(previous[i]) !== lastKey) return previous[i];
+function readStore(key: string): unknown {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
   }
-  return { name: "", avatar: null, side: last.side === "left" ? "right" : "left" };
+}
+
+function writeStore(key: string, value: unknown) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Quota exceeded or storage disabled — drop silently.
+  }
+}
+
+export function savedSpeakers(): Speaker[] {
+  const list = readStore(SAVED_KEY);
+  return Array.isArray(list) ? list.filter(isSpeaker) : [];
+}
+
+// Typing in a bubble makes its speaker the last worked on once the typing
+// pauses (flushed early if a bubble is inserted first).
+let pending: Speaker | null = null;
+let pendingTimer: ReturnType<typeof setTimeout> | undefined;
+function flushPending() {
+  clearTimeout(pendingTimer);
+  if (pending) writeStore(LAST_KEY, pending);
+  pending = null;
+}
+export function rememberSpeakerSoon(speaker: Speaker): void {
+  pending = speaker;
+  clearTimeout(pendingTimer);
+  pendingTimer = setTimeout(flushPending, 600);
+}
+
+// Makes `speaker` the last worked on and, when it has both a name and an
+// icon, (re)saves it at the head of the list. Supersedes any pending typing:
+// a menu change to one bubble redraws the document, which the typing watch
+// would otherwise credit to whichever bubble holds the caret.
+function rememberSpeaker(speaker: Speaker): void {
+  clearTimeout(pendingTimer);
+  pending = null;
+  writeStore(LAST_KEY, speaker);
+  if (!speaker.name || !speaker.avatar) return;
+  const rest = savedSpeakers().filter((s) => s.name !== speaker.name);
+  writeStore(SAVED_KEY, [speaker, ...rest].slice(0, MAX_SAVED));
+}
+
+function forgetSpeaker(name: string): void {
+  writeStore(
+    SAVED_KEY,
+    savedSpeakers().filter((s) => s.name !== name),
+  );
+}
+
+// Who speaks in a newly inserted bubble: the speaker last worked on, which
+// is saved to the list as it is reused.
+export function speakerForNewBubble(): Speaker {
+  flushPending();
+  const last = readStore(LAST_KEY);
+  const speaker = isSpeaker(last) ? last : BLANK;
+  rememberSpeaker(speaker);
+  return speaker;
 }
 
 export function speechNameOf(speech: Element): string {
   return speech.querySelector(":scope > .speech-body > .speech-name")?.textContent?.trim() ?? "";
 }
 
+// The speaker of a bubble as rendered (either editor).
+export function speakerFromDom(speech: Element): Speaker {
+  return {
+    name: speechNameOf(speech),
+    avatar: speech.querySelector(":scope > .speech-avatar img")?.getAttribute("src") || null,
+    side: speech.getAttribute("data-side") === "right" ? "right" : "left",
+  };
+}
+
 // What the menu does, implemented per editor: TipTap transactions or plain
 // DOM edits. `speech` is the bubble's root element as rendered.
 export type SpeechMenuActions = {
+  // This bubble only: it is now someone else speaking.
+  setSpeaker: (speech: HTMLElement, speaker: Speaker) => void;
   setAvatar: (speech: HTMLElement, url: string | null) => void;
   swapSide: (speech: HTMLElement) => void;
   remove: (speech: HTMLElement) => void;
 };
 
-// Clicking a bubble's avatar opens a small menu (change / remove the icon,
-// swap sides, delete the bubble); dropping an image file onto the avatar
-// uploads it as the icon. Framework-free so the same menu serves the TipTap
+// Clicking a bubble's avatar opens a small menu (switch to a saved speaker,
+// change / remove the icon, swap sides, delete the bubble); dropping an image
+// file onto the avatar uploads it as the icon. Framework-free so the same menu serves the TipTap
 // editor and the designMode iframe. The menu carries data-he-ui, so
 // HtmlSource's save-time cleaner never writes it into the file.
 export function attachSpeechMenu(opts: {
@@ -88,6 +169,13 @@ export function attachSpeechMenu(opts: {
     menuAvatar = null;
   };
 
+  // A change made from the menu makes the bubble's speaker the remembered
+  // one. Both editors have redrawn the bubble by the time `run` returns.
+  const act = (speech: HTMLElement, run: () => void) => {
+    run();
+    if (speech.isConnected) rememberSpeaker(speakerFromDom(speech));
+  };
+
   const avatarAt = (target: EventTarget | null): HTMLElement | null => {
     const el = (target as Element | null)?.closest?.<HTMLElement>(AVATAR_SELECTOR);
     return el && isTarget(el) ? el : null;
@@ -99,7 +187,7 @@ export function attachSpeechMenu(opts: {
       const url = await uploadImage(file);
       toast.success("アイコンを設定しました", { id: toastId, duration: TOAST_MS });
       // The bubble may have been deleted (or the file closed) meanwhile.
-      if (speech.isConnected) actions.setAvatar(speech, url);
+      if (speech.isConnected) act(speech, () => actions.setAvatar(speech, url));
     } catch (err) {
       const message = err instanceof Error ? err.message : "Upload failed";
       toast.error(message, { id: toastId, duration: TOAST_MS });
@@ -127,7 +215,7 @@ export function attachSpeechMenu(opts: {
       confirmLabel: "設定",
     });
     if (raw === null || !speech.isConnected) return;
-    actions.setAvatar(speech, raw.trim() || null);
+    act(speech, () => actions.setAvatar(speech, raw.trim() || null));
   };
 
   const open = (avatar: HTMLElement) => {
@@ -144,30 +232,36 @@ export function attachSpeechMenu(opts: {
     root.style.cssText =
       "position: fixed; z-index: 2147483647; min-width: 200px; padding: 6px 0; border-radius: 8px; background: var(--surface, #fff); box-shadow: 0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06); font: 12px/1.4 -apple-system, BlinkMacSystemFont, sans-serif; color: var(--text, #222); user-select: none;";
 
-    if (name) {
-      const header = doc.createElement("div");
-      header.textContent = `「${name}」の吹き出しすべてに反映`;
-      header.style.cssText =
+    const caption = (text: string) => {
+      const el = doc.createElement("div");
+      el.textContent = text;
+      el.style.cssText =
         "padding: 2px 12px 6px; font-size: 10.5px; letter-spacing: 0.04em; color: var(--text-subtle, #999);";
-      root.appendChild(header);
-    }
-    const item = (label: string, run: () => void) => {
+      root.appendChild(el);
+    };
+    const hoverable = (el: HTMLElement) => {
+      el.addEventListener("mouseenter", () => {
+        el.style.background = "var(--surface-2, #f2f2f2)";
+      });
+      el.addEventListener("mouseleave", () => {
+        el.style.background = "transparent";
+      });
+    };
+    const button = (label: string, css: string, run: () => void) => {
       const btn = doc.createElement("button");
       btn.type = "button";
       btn.setAttribute("role", "menuitem");
       btn.textContent = label;
-      btn.style.cssText =
-        "display: block; width: 100%; padding: 6px 12px; border: none; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;";
-      btn.addEventListener("mouseenter", () => {
-        btn.style.background = "var(--surface-2, #f2f2f2)";
-      });
-      btn.addEventListener("mouseleave", () => {
-        btn.style.background = "transparent";
-      });
-      btn.addEventListener("click", () => {
+      btn.style.cssText = `border: none; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; ${css}`;
+      btn.addEventListener("click", run);
+      return btn;
+    };
+    const item = (label: string, run: () => void) => {
+      const btn = button(label, "display: block; width: 100%; padding: 6px 12px;", () => {
         close();
         run();
       });
+      hoverable(btn);
       root.appendChild(btn);
     };
     const separator = () => {
@@ -175,11 +269,53 @@ export function attachSpeechMenu(opts: {
       sep.style.cssText = "height: 1px; margin: 5px 0; background: var(--border-subtle, #eee);";
       root.appendChild(sep);
     };
+    // A saved speaker: thumbnail + name switches this bubble to them; × drops
+    // them from the list (the menu is redrawn in place).
+    const speakerRow = (s: Speaker) => {
+      const row = doc.createElement("div");
+      row.style.cssText = "display: flex; align-items: center; padding-right: 4px;";
+      hoverable(row);
+      const pick = button(
+        "",
+        "flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 5px 12px;",
+        () => {
+          close();
+          act(speech, () => actions.setSpeaker(speech, s));
+        },
+      );
+      const thumb = doc.createElement("span");
+      thumb.style.cssText =
+        "flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--surface-2, #eee) center / cover no-repeat;";
+      thumb.style.backgroundImage = `url(${JSON.stringify(s.avatar)})`;
+      const label = doc.createElement("span");
+      label.textContent = s.name;
+      label.style.cssText = "overflow: hidden; white-space: nowrap; text-overflow: ellipsis;";
+      if (s.avatar === current && s.name === name) label.style.fontWeight = "600";
+      pick.append(thumb, label);
+      const forget = button(
+        "×",
+        "flex: none; padding: 2px 8px; color: var(--text-subtle, #999);",
+        () => {
+          forgetSpeaker(s.name);
+          open(avatar);
+        },
+      );
+      forget.title = "一覧から外す";
+      row.append(pick, forget);
+      root.appendChild(row);
+    };
 
+    const saved = savedSpeakers();
+    if (saved.length > 0) {
+      caption("話者を切り替え");
+      for (const s of saved) speakerRow(s);
+      separator();
+    }
+    if (name) caption(`「${name}」の吹き出しすべてに反映`);
     item("画像をアップロード…", () => pickFile(speech));
     item("画像の URL を指定…", () => void askUrl(speech, current));
-    if (current) item("アイコンを外す", () => actions.setAvatar(speech, null));
-    item("左右を入れ替え", () => actions.swapSide(speech));
+    if (current) item("アイコンを外す", () => act(speech, () => actions.setAvatar(speech, null)));
+    item("左右を入れ替え", () => act(speech, () => actions.swapSide(speech)));
     separator();
     item("この吹き出しを削除", () => actions.remove(speech));
 

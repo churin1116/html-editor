@@ -2,11 +2,12 @@ import {
   type Speaker,
   type SpeechMenuActions,
   type SpeechSide,
-  pickNextSpeaker,
+  rememberSpeakerSoon,
+  speakerForNewBubble,
 } from "@/lib/speech";
 import { type Editor, Node, mergeAttributes } from "@tiptap/core";
 import type { DOMOutputSpec, Node as PmNode, ResolvedPos } from "@tiptap/pm/model";
-import { NodeSelection, Selection, TextSelection } from "@tiptap/pm/state";
+import { NodeSelection, Plugin, Selection, TextSelection } from "@tiptap/pm/state";
 
 // Speech bubble block (markup and rationale in speech.ts). The bubble text
 // and the speaker's name are ordinary editable content — the name is typed in
@@ -184,9 +185,9 @@ export const Speech = Node.create({
     return {
       // Beside the current block, like the TOC: an empty paragraph is
       // replaced, otherwise it goes after the block — or after the bubble,
-      // when the caret is in one. The speaker alternates (pickNextSpeaker);
-      // the caret lands in the bubble when the name is already known, in the
-      // name otherwise.
+      // when the caret is in one. The speaker is the one last worked on
+      // (speech.ts); the caret lands in the bubble when the name is already
+      // known, in the name otherwise.
       insertSpeech:
         () =>
         ({ state, tr, dispatch }) => {
@@ -220,14 +221,9 @@ export const Speech = Node.create({
             to = state.selection.to;
           }
 
-          const previous: Speaker[] = [];
-          state.doc.descendants((node, pos) => {
-            if (pos >= from) return false;
-            if (node.type.name === "speech") previous.push(speakerOf(node));
-            return true;
-          });
-          const speaker = pickNextSpeaker(previous);
-
+          // Past the dry-run check: picking the speaker saves it (speech.ts).
+          if (!dispatch) return true;
+          const speaker = speakerForNewBubble();
           const speech = schema.nodes.speech.create(
             { avatar: speaker.avatar, side: speaker.side },
             [
@@ -235,7 +231,6 @@ export const Speech = Node.create({
               schema.nodes.speechBubble.create(null, schema.nodes.paragraph.create()),
             ],
           );
-          if (!dispatch) return true;
           tr.replaceWith(from, to, speech);
           // Leave somewhere to type after a bubble that ends the document.
           if (tr.doc.lastChild?.type.name === "speech") {
@@ -248,6 +243,23 @@ export const Speech = Node.create({
           return true;
         },
     };
+  },
+
+  // Typing in a bubble (its name or its text) makes its speaker the one the
+  // next bubble starts as.
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        view: () => ({
+          update: (view, prev) => {
+            if (view.state.doc.eq(prev.doc)) return;
+            const { $from } = view.state.selection;
+            const depth = outerSpeechDepth($from);
+            if (depth > 0) rememberSpeakerSoon(speakerOf($from.node(depth)));
+          },
+        }),
+      }),
+    ];
   },
 
   addKeyboardShortcuts() {
@@ -352,6 +364,24 @@ export function tiptapSpeechActions(editor: Editor): SpeechMenuActions {
     return out;
   };
   return {
+    setSpeaker: (el, speaker) => {
+      const pos = locate(el);
+      const node = pos >= 0 ? editor.state.doc.nodeAt(pos) : null;
+      const name = node?.firstChild;
+      if (!node || !name) return;
+      const { schema } = editor.state;
+      const tr = editor.state.tr.setNodeMarkup(pos, undefined, {
+        ...node.attrs,
+        avatar: speaker.avatar,
+        side: speaker.side,
+      });
+      tr.replaceWith(
+        pos + 2,
+        pos + 2 + name.content.size,
+        speaker.name ? schema.text(speaker.name) : [],
+      );
+      editor.view.dispatch(tr);
+    },
     setAvatar: (el, url) => {
       const pos = locate(el);
       if (pos < 0) return;

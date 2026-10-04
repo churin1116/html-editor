@@ -15,9 +15,10 @@ import { attachSpeechMenu } from "@/lib/speech";
 import {
   SPEECH_EDITING_CSS,
   domSpeechActions,
-  handleSpeechNameEnter,
+  handleSpeechEnter,
   insertDomSpeech,
   prepareDomSpeeches,
+  rememberSpeechAtCaret,
   stripSpeechEditingAttrs,
 } from "@/lib/speech-dom";
 import { TOC_SELECTOR, insertDomToc, stripTocEditingAttrs, syncDomTocs } from "@/lib/toc-dom";
@@ -164,6 +165,7 @@ export function HtmlSource({
       const onDocInput = (e: Event) => {
         const tag = (e.target as Element | null)?.tagName;
         if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+        rememberSpeechAtCaret(doc);
         onInput();
       };
       // Keyboard shortcuts. designMode gives us ⌘B/⌘I/⌘U/⌘Z for free, but
@@ -176,10 +178,12 @@ export function HtmlSource({
       const cmd = docCommands(doc, onInput);
       const onKeyDown = (e: KeyboardEvent) => {
         if (e.isComposing) return;
-        // A speech bubble's name is one line: Enter moves on to the bubble.
+        // Speech bubbles: Enter in the name moves on to the bubble, a second
+        // Enter on an empty last line leaves it.
         const plain = !(e.shiftKey || e.metaKey || e.ctrlKey || e.altKey);
-        if (e.key === "Enter" && plain && handleSpeechNameEnter(doc)) {
+        if (e.key === "Enter" && plain && handleSpeechEnter(doc)) {
           e.preventDefault();
+          onInput();
           return;
         }
         if (!(e.metaKey || e.ctrlKey)) return;
