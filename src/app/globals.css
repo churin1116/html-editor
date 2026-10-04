@@ -494,3 +494,49 @@ button {
   color: var(--text-subtle);
   font-size: 0.9em;
 }
+
+/* Speech bubble (speech-node.ts): the avatar opens the bubble's menu
+   (speech.ts) on click, so it reads as a button, not as a draggable image.
+   An empty name / bubble shows a placeholder, as an empty <details> does. */
+.tiptap.prose-canvas .speech-avatar,
+.tiptap.prose-canvas .speech-avatar img {
+  cursor: pointer;
+}
+.tiptap.prose-canvas .speech-avatar:hover {
+  box-shadow: 0 0 0 2px var(--border-strong);
+}
+.tiptap.prose-canvas
+  .speech-name:has(> br.ProseMirror-trailingBreak:only-child)
+  > br.ProseMirror-trailingBreak,
+.tiptap.prose-canvas
+  .speech-bubble
+  > p:only-child:has(> br.ProseMirror-trailingBreak:only-child)
+  > br.ProseMirror-trailingBreak {
+  display: none;
+}
+.tiptap.prose-canvas .speech-name:has(> br.ProseMirror-trailingBreak:only-child)::after {
+  content: "名前";
+  color: var(--text-subtle);
+  font-weight: 400;
+  pointer-events: none;
+}
+.tiptap.prose-canvas
+  .speech-bubble
+  > p:only-child:has(> br.ProseMirror-trailingBreak:only-child)::before {
+  content: "発言";
+  color: var(--text-subtle);
+  pointer-events: none;
+}
+.tiptap.prose-canvas .speech.ProseMirror-selectednode {
+  outline: 2px solid var(--primary);
+  outline-offset: 4px;
+  border-radius: var(--radius-md);
+}
+
+/* A selected block (bubble, card, TOC) shows as its outline: TipTap clears
+   the selection background inside it, but the theme's ::selection still
+   sets --on-primary text, which on the cleared background all but vanishes.
+   currentColor keeps each element's own color. */
+.tiptap.ProseMirror-hideselection *::selection {
+  color: currentColor;
+}

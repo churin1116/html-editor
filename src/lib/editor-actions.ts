@@ -20,6 +20,7 @@ export type ActionId =
   | "link"
   | "linkCard"
   | "toc"
+  | "speech"
   | "unlink"
   | "table"
   | "details"
@@ -76,6 +77,7 @@ export const ACTIONS: ActionDef[] = [
   { id: "link", label: "リンク", hint: "⌘+K", supports: ["html", "md"] },
   { id: "linkCard", label: "リンクカード", supports: ["html"] },
   { id: "toc", label: "目次", supports: ["html"] },
+  { id: "speech", label: "吹き出し", supports: ["html"] },
   { id: "unlink", label: "装飾を解除", supports: ["html"] },
   { id: "table", label: "テーブル", icon: "table", supports: ["html", "md"] },
   { id: "details", label: "▾ 折りたたみ", supports: ["html", "md"] },
@@ -218,6 +220,7 @@ export function applyMdAction(view: EditorView, id: ActionId) {
     // HTML-only actions are no-ops in Markdown mode.
     case "linkCard":
     case "toc":
+    case "speech":
     case "unlink":
     case "underline":
     case "sup":
@@ -440,6 +443,9 @@ export function applyHtmlAction(editor: TiptapEditor, id: ActionId) {
       break;
     case "toc":
       chain.insertToc().run();
+      break;
+    case "speech":
+      chain.insertSpeech().run();
       break;
     // Generic "remove all inline marks at cursor". Subsumes the old
     // "unlink" behaviour: anything wrapped around the current selection

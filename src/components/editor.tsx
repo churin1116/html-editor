@@ -32,6 +32,8 @@ import { Rp, Rt, Ruby } from "@/lib/ruby-nodes";
 import { loadScroll, saveScroll } from "@/lib/scroll-memory";
 import { Section } from "@/lib/section-node";
 import { type ToolbarButton, attachSelectionToolbar } from "@/lib/selection-toolbar";
+import { attachSpeechMenu } from "@/lib/speech";
+import { Speech, SpeechBubble, SpeechName, tiptapSpeechActions } from "@/lib/speech-node";
 import { Bold, Italic } from "@/lib/tag-preserving-marks";
 import { Toc } from "@/lib/toc-node";
 import {
@@ -191,6 +193,10 @@ export function Editor({
       LinkCard,
       LinkCardOnEnter,
       Toc,
+      // Same <div> priority story as LinkCard.
+      Speech,
+      SpeechName,
+      SpeechBubble,
       EditorShortcuts,
       Div,
       Aside,
@@ -450,7 +456,9 @@ export function Editor({
     if (!editor) return;
     return attachImageResizer({
       doc: document,
-      isTarget: (img) => editor.isEditable && editor.view.dom.contains(img),
+      // A speech bubble's avatar is sized by the theme, not by hand.
+      isTarget: (img) =>
+        editor.isEditable && editor.view.dom.contains(img) && !img.closest(".speech-avatar"),
       onResizeEnd: (img, width) => {
         const view = editor.view;
         let pos: number;
@@ -494,6 +502,17 @@ export function Editor({
         return Boolean(n && editor.view.dom.contains(n));
       },
       isTargetEligible: (target) => editor.isEditable && editor.view.dom.contains(target),
+    });
+  }, [editor]);
+
+  // Clicking a speech bubble's avatar opens its menu (icon / side / delete);
+  // dropping an image on it uploads a new icon.
+  useEffect(() => {
+    if (!editor) return;
+    return attachSpeechMenu({
+      doc: document,
+      isTarget: (el) => editor.isEditable && editor.view.dom.contains(el),
+      actions: tiptapSpeechActions(editor),
     });
   }, [editor]);
 
@@ -725,6 +744,12 @@ function tiptapToolbarButtons(editor: TiptapEditor): ToolbarButton[] {
       label: "目次",
       title: "目次を挿入",
       action: () => applyHtmlAction(editor, "toc"),
+      contextOnly: true,
+    },
+    {
+      label: "吹き出し",
+      title: "吹き出しを挿入",
+      action: () => applyHtmlAction(editor, "speech"),
       contextOnly: true,
     },
   ];
