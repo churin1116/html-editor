@@ -15,6 +15,11 @@ import { toast } from "sonner";
 //     </div>
 //   </div>
 //
+// The same markup is read outside this repo: Sleeme's blog editor
+// (260228-sleep-personalities/web-cbti, src/components/blog/speech.ts) takes
+// bubbles pasted from these files as its own. Change the shape there too, or
+// pasted bubbles fall apart into plain paragraphs.
+//
 // The look comes from the Chameleon theme (theme.css, [data-speech]), so a
 // saved file renders it with no script. The avatar is a plain <img>: its src
 // is the only copy of the URL, and alt="" makes a failed load show the
@@ -27,7 +32,8 @@ import { toast } from "sonner";
 //
 // Speakers are also remembered in this browser (localStorage — nothing leaves
 // the machine): a new bubble starts as the speaker last worked on, in any
-// file, and name + icon pairs are kept as saved speakers the menu offers to
+// file (or as the one named, when started with "@name " — SPEECH_MARKER),
+// and name + icon pairs are kept as saved speakers the menu offers to
 // switch to, one per name. Typing and menu changes only move "last worked
 // on"; the pair is saved when a new bubble starts from it — by then it is
 // settled, whatever order the icon and the name were changed in, and no
@@ -127,6 +133,38 @@ export function speakerForNewBubble(): Speaker {
   saveSpeaker(speaker);
   return speaker;
 }
+
+// Who speaks in a bubble started by typing "@name " (speech-node.ts,
+// md-input-rules.ts): that person as found in this document (`inDoc`, looked
+// up by the caller), else the saved speaker of that name, else someone new —
+// no icon, on the side opposite the previous bubble, since a dialogue goes
+// back and forth. Whoever it is becomes the last worked on, and is saved.
+export function speakerNamed(
+  name: string,
+  inDoc: Speaker | null,
+  previousSide: SpeechSide | null,
+): Speaker {
+  const speaker = inDoc ??
+    savedSpeakers().find((s) => s.name === name) ?? {
+      name,
+      avatar: null,
+      side: previousSide === "left" ? "right" : "left",
+    };
+  noteLastSpeaker(speaker);
+  saveSpeaker(speaker);
+  return speaker;
+}
+
+// "@ " / "@name " typed at the start of a paragraph turns it into a bubble,
+// the way "> " makes a quote: with the name, that person speaks
+// (speakerNamed); bare, the speaker last worked on, as with the toolbar.
+// Full-width ＠ and the ideographic space (which \s covers) work too, so it
+// can be typed without leaving Japanese input. A name is up to 30
+// characters with no spaces. The same pattern twice, for the two ways the
+// editors look at it: a TipTap input rule sees the space just typed, the
+// designMode handler the text before the caret as Space goes down.
+export const SPEECH_INPUT = /^[@＠]([^\s@＠]{0,30})\s$/;
+export const SPEECH_MARKER = /^[@＠]([^\s@＠]{0,30})$/;
 
 export function speechNameOf(speech: Element): string {
   return speech.querySelector(":scope > .speech-body > .speech-name")?.textContent?.trim() ?? "";

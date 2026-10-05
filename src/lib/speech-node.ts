@@ -1,11 +1,14 @@
 import {
+  SPEECH_INPUT,
   type Speaker,
   type SpeechMenuActions,
   type SpeechSide,
   rememberSpeakerSoon,
   speakerForNewBubble,
+  speakerNamed,
 } from "@/lib/speech";
-import { type Editor, Node, mergeAttributes } from "@tiptap/core";
+import { type Editor, InputRule, Node, mergeAttributes } from "@tiptap/core";
+import { closeHistory } from "@tiptap/pm/history";
 import type { DOMOutputSpec, Node as PmNode, ResolvedPos } from "@tiptap/pm/model";
 import {
   type EditorState,
@@ -48,6 +51,30 @@ function outerSpeechDepth($pos: ResolvedPos): number {
     if ($pos.node(d).type.name === "speech") return d;
   }
   return -1;
+}
+
+// For "@name ": the side of the last bubble before `pos`, and the speaker of
+// a bubble named `name` — the last one before `pos`, else the first after.
+function speakersAround(
+  doc: PmNode,
+  pos: number,
+  name: string,
+): { previousSide: SpeechSide | null; inDoc: Speaker | null } {
+  let previousSide: SpeechSide | null = null;
+  let before: Speaker | null = null;
+  let after: Speaker | null = null;
+  doc.descendants((node, p) => {
+    if (node.type.name !== "speech") return true;
+    const s = speakerOf(node);
+    if (p < pos) {
+      previousSide = s.side;
+      if (s.name === name) before = s;
+    } else if (!after && s.name === name) {
+      after = s;
+    }
+    return false;
+  });
+  return { previousSide, inDoc: before ?? after };
 }
 
 function hasEmptyBubble(node: PmNode): boolean {
@@ -281,6 +308,59 @@ export const Speech = Node.create({
           return true;
         },
     };
+  },
+
+  // "@ " / "@name " at the start of a paragraph makes it a bubble
+  // (SPEECH_INPUT); any text already after the caret becomes what is said.
+  // ⌘Z gives back the typed "@name": the conversion is its own history
+  // event, where grouped with the typing just before it ⌘Z would take the
+  // name too. (Backspace right after removes the empty bubble instead.)
+  addInputRules() {
+    return [
+      new InputRule({
+        find: SPEECH_INPUT,
+        handler: ({ state, range, match }) => {
+          const { schema, tr } = state;
+          const $start = state.doc.resolve(range.from);
+          // Only typed at the head of a paragraph, outside any bubble, where
+          // the container takes a bubble (not a list item's first paragraph).
+          if ($start.parent.type.name !== "paragraph" || range.from !== $start.start()) return null;
+          if (outerSpeechDepth($start) > 0) return null;
+          const index = $start.index(-1);
+          if (!$start.node(-1).canReplaceWith(index, index + 1, schema.nodes.speech)) return null;
+
+          const paraPos = $start.before();
+          const name = match[1] ?? "";
+          let speaker: Speaker;
+          if (name) {
+            const { inDoc, previousSide } = speakersAround(state.doc, paraPos, name);
+            speaker = speakerNamed(name, inDoc, previousSide);
+          } else {
+            speaker = speakerForNewBubble();
+          }
+
+          closeHistory(tr);
+          tr.delete(range.from, range.to);
+          const rest = tr.doc.nodeAt(paraPos);
+          if (!rest) return null;
+          const speech = schema.nodes.speech.create(
+            { avatar: speaker.avatar, side: speaker.side },
+            [
+              schema.nodes.speechName.create(null, speaker.name ? schema.text(speaker.name) : null),
+              schema.nodes.speechBubble.create(null, rest),
+            ],
+          );
+          tr.replaceWith(paraPos, paraPos + rest.nodeSize, speech);
+          // Leave somewhere to type after a bubble that ends the document.
+          if (tr.doc.lastChild?.type.name === "speech") {
+            tr.insert(tr.doc.content.size, schema.nodes.paragraph.create());
+          }
+          const nameStart = paraPos + 2;
+          const bubbleText = paraPos + 1 + speech.child(0).nodeSize + 2;
+          tr.setSelection(TextSelection.create(tr.doc, speaker.name ? bubbleText : nameStart));
+        },
+      }),
+    ];
   },
 
   // Typing in a bubble (its name or its text) makes its speaker the one the

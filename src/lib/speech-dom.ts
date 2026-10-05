@@ -11,11 +11,13 @@
 
 import {
   SPEECH_SELECTOR,
+  type Speaker,
   type SpeechMenuActions,
   type SpeechSide,
   rememberSpeakerSoon,
   speakerForNewBubble,
   speakerFromDom,
+  speakerNamed,
 } from "@/lib/speech";
 
 export const SPEECH_EDITING_CSS = `
@@ -118,6 +120,92 @@ export function insertDomSpeech(doc: Document): void {
   sel?.removeAllRanges();
   sel?.addRange(caret);
   speech.scrollIntoView({ block: "nearest" });
+}
+
+// Where "@ " / "@name " may turn a paragraph into a bubble: a paragraph
+// that is not in a bubble already, a list or table cell, or code — on a
+// Chameleon page only, as with the right-click "吹き出し" (html-source.tsx):
+// the bubble's look comes from the theme.
+export function canStartDomSpeech(block: Element): boolean {
+  return (
+    block.tagName === "P" &&
+    !block.closest(`${SPEECH_SELECTOR}, ${LIST_ITEM}, pre`) &&
+    Boolean(block.ownerDocument.querySelector('meta[name="chameleon"]'))
+  );
+}
+
+function escapeAttr(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// For "@name ": the side of the last bubble before `p`, and the speaker of a
+// bubble named `name` — the last one before `p`, else the first after.
+function domSpeakersAround(
+  doc: Document,
+  p: Element,
+  name: string,
+): { previousSide: SpeechSide | null; inDoc: Speaker | null } {
+  let previousSide: SpeechSide | null = null;
+  let before: Speaker | null = null;
+  let after: Speaker | null = null;
+  for (const speech of doc.querySelectorAll(SPEECH_SELECTOR)) {
+    if (speech.parentElement?.closest(SPEECH_SELECTOR)) continue;
+    const s = speakerFromDom(speech);
+    if (speech.compareDocumentPosition(p) & Node.DOCUMENT_POSITION_FOLLOWING) {
+      previousSide = s.side;
+      if (s.name === name) before = s;
+    } else if (!after && s.name === name) {
+      after = s;
+    }
+  }
+  return { previousSide, inDoc: before ?? after };
+}
+
+// "@ " / "@name " typed at the start of a paragraph (md-input-rules.ts, which
+// has already deleted the marker and checked canStartDomSpeech): the
+// paragraph becomes a bubble, whatever it holds becoming what is said.
+// Through the editing engine (insertHTML over the paragraph), so ⌘Z turns
+// it back into the paragraph, and a second ⌘Z brings back the marker — the
+// way "> " and "## " undo.
+export function startDomSpeech(doc: Document, p: HTMLElement, name: string): void {
+  let speaker: Speaker;
+  if (name) {
+    const { inDoc, previousSide } = domSpeakersAround(doc, p, name);
+    speaker = speakerNamed(name, inDoc, previousSide);
+  } else {
+    speaker = speakerForNewBubble();
+  }
+  const side = speaker.side === "right" ? ' data-side="right"' : "";
+  const img = speaker.avatar ? `<img src="${escapeAttr(speaker.avatar)}" alt="">` : "";
+  const html =
+    `<div class="speech" data-speech=""${side} data-speech-new="">` +
+    `<div class="speech-avatar">${img}</div>` +
+    `<div class="speech-body"><div class="speech-name">${escapeAttr(speaker.name)}</div>` +
+    `<div class="speech-bubble">${p.outerHTML}</div></div></div>`;
+
+  const sel = doc.getSelection();
+  if (!sel) return;
+  const all = doc.createRange();
+  all.selectNode(p);
+  sel.removeAllRanges();
+  sel.addRange(all);
+  doc.execCommand("insertHTML", false, html);
+
+  const speech = doc.querySelector<HTMLElement>("[data-speech-new]");
+  if (!speech) return;
+  speech.removeAttribute("data-speech-new");
+  prepareDomSpeeches(doc);
+  const bubble = speech.querySelector(":scope > .speech-body > .speech-bubble");
+  const nameEl = speech.querySelector(":scope > .speech-body > .speech-name");
+  const at = speaker.name ? (bubble?.firstElementChild ?? bubble) : nameEl;
+  if (at) placeCaret(doc, at);
+  // insertHTML reported the change while the marker attribute was still on;
+  // report the finished bubble so that is what gets saved.
+  speech.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 function elementAtCaret(doc: Document): Element | null {

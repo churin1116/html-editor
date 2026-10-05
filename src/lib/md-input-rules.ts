@@ -2,11 +2,13 @@
 // Typing markdown markers converts to real HTML elements, mirroring what
 // Tiptap's input rules do in the WYSIWYG editor:
 //
-//   Block (trigger: Space after the marker at the start of a paragraph)
+//   Block (trigger: Space after the marker at the start of a paragraph — the
+//   ideographic space too, as TipTap's \s takes it, so Japanese input works)
 //     #..######  → h1..h6
 //     - * +      → unordered list
 //     1.         → ordered list
 //     >          → blockquote
+//     @  @name   → speech bubble (speech-dom.ts; also ＠)
 //   Block (trigger: Enter on a marker-only paragraph)
 //     ---  ***  ___ → horizontal rule
 //     ```           → code block (pre)
@@ -18,6 +20,9 @@
 // (Cmd+Z reverts the conversion, then the marker text). Exception: inline
 // code is built via direct DOM insertion because Chrome's insertHTML
 // sanitizer rewrites <code> to a styled <span>.
+
+import { SPEECH_MARKER } from "@/lib/speech";
+import { canStartDomSpeech, startDomSpeech } from "@/lib/speech-dom";
 
 const BLOCK_TAGS = new Set([
   "P",
@@ -103,7 +108,7 @@ export function attachMarkdownInputRules(doc: Document): () => void {
     // Never transform inside code contexts.
     if (block.tagName === "PRE" || (anchor.parentElement?.closest("code, pre") ?? null)) return;
 
-    if (e.key === " ") {
+    if (e.key === " " || e.key === "　") {
       // Only convert plain paragraphs; leave headings/lists/quotes alone.
       if (block.tagName !== "P" && block.tagName !== "DIV" && block.tagName !== "BODY") return;
       const toCaret = doc.createRange();
@@ -113,7 +118,16 @@ export function attachMarkdownInputRules(doc: Document): () => void {
 
       let apply: (() => void) | null = null;
       const heading = marker.match(/^(#{1,6})$/);
-      if (heading) {
+      const speech = marker.match(SPEECH_MARKER);
+      if (speech && canStartDomSpeech(block)) {
+        const name = speech[1];
+        // The paragraph itself, not looked up again from the caret: once its
+        // text is gone the caret sits on the <p>, which closestBlock's
+        // instanceof (this window's HTMLElement, not the iframe's) passes over.
+        apply = () => {
+          if (block.isConnected) startDomSpeech(doc, block, name);
+        };
+      } else if (heading) {
         const level = heading[1].length;
         apply = () => formatBlockPreservingAttrs(doc, `h${level}`);
       } else if (/^[-*+]$/.test(marker)) {
