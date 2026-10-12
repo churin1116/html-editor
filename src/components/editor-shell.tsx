@@ -4,6 +4,7 @@ import { ConflictDialog, type ConflictResolution } from "@/components/conflict-d
 import { Editor } from "@/components/editor";
 import { HtmlSource } from "@/components/html-source";
 import { MdEditor } from "@/components/md-editor";
+import { ScriptCopyButton } from "@/components/script-copy-button";
 import { Sidebar, type SidebarCollapse } from "@/components/sidebar";
 import type { AllowedRoot } from "@/lib/allowed-roots";
 import { confirmDialog } from "@/lib/dialogs";
@@ -440,6 +441,9 @@ export function EditorShell({
           >
             <HamburgerIcon />
           </button>
+        )}
+        {file?.format === "html" && (
+          <ScriptCopyButton html={draft} title={file.title} path={file.path} />
         )}
         <div className="flex-1 overflow-hidden">
           {file ? (

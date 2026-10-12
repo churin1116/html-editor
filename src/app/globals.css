@@ -338,6 +338,13 @@ button {
   border-color: var(--border-strong);
 }
 
+/* 台本をコピー (script-copy-button.tsx) sits top-right of the document. The
+   Chameleon extension's theme picker sits there too by default
+   (data-cm-rail-pos="tr" on <html>), so step left of it. */
+html[data-cm-rail-pos="tr"] .script-copy-button {
+  right: 84px;
+}
+
 /* ============================================================
    TipTap editor — only behavioral rules. Visual prose styling
    lives in the Chameleon theme (theme.css § PROSE CANVAS).
