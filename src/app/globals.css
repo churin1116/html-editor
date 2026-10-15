@@ -453,8 +453,8 @@ html[data-cm-rail-pos="tr"] .script-copy-button {
 }
 
 /* Link card: a block you select and move, not text you edit. A plain click
-   selects it (like every other link here — Link is configured with
-   openOnClick: false); ⌘+click opens it (link-open.ts). */
+   selects it; ⌘+click opens it (link-open.ts). A text link opens on a plain
+   click. */
 .tiptap.prose-canvas .link-card {
   cursor: grab;
 }
@@ -470,12 +470,13 @@ html[data-cm-rail-pos="tr"] .script-copy-button {
   border-radius: var(--radius-md);
 }
 
-/* While ⌘ is held, links and cards read as clickable: ⌘+click follows them. */
-[data-link-mod] .tiptap.prose-canvas a[href],
+/* A click follows a text link, so it always reads as clickable. A card does
+   only while ⌘ is held: ⌘+click follows it. */
+.tiptap.prose-canvas a[href],
 [data-link-mod] .tiptap.prose-canvas .link-card {
   cursor: pointer;
 }
-[data-link-mod] .tiptap.prose-canvas a[href]:hover {
+.tiptap.prose-canvas a[href]:hover {
   text-decoration-color: currentColor;
 }
 [data-link-mod] .tiptap.prose-canvas .link-card:hover .link-card-body {

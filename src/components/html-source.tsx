@@ -2,13 +2,7 @@
 
 import { attachImageResizer } from "@/lib/image-resize";
 import { isSingleUrl } from "@/lib/link-card";
-import {
-  followLink,
-  isLinkOpenClick,
-  linkHrefAt,
-  resolveLinkHref,
-  trackLinkModifier,
-} from "@/lib/link-open";
+import { followLink, linkHrefToOpen, resolveLinkHref, trackLinkModifier } from "@/lib/link-open";
 import { attachMarkdownInputRules, formatBlockPreservingAttrs } from "@/lib/md-input-rules";
 import { type ToolbarButton, attachSelectionToolbar } from "@/lib/selection-toolbar";
 import { attachSpeechMenu } from "@/lib/speech";
@@ -97,7 +91,7 @@ export function HtmlSource({
   onChange: (html: string) => void;
   onSave?: (html: string) => void;
   path?: string;
-  // ⌘+click on a link to another .html/.md opens it here (link-open.ts).
+  // Following a link to another .html/.md opens it here (link-open.ts).
   onOpenFile?: (path: string) => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -345,12 +339,13 @@ export function HtmlSource({
       if (doc.body) {
         tocObserver.observe(doc.body, { childList: true, subtree: true, characterData: true });
       }
-      // ⌘+click follows a link or link card; a plain click keeps editing it.
+      // A click follows a text link, ⌘+click a link card (link-open.ts).
       // Capture phase, ahead of the page's own click handlers (copy buttons…).
+      // A drag that ends inside the link still fires a click; with text
+      // selected it was a selection, so leave it.
       const onLinkClick = (e: MouseEvent) => {
-        if (!isLinkOpenClick(e)) return;
-        const href = linkHrefAt(e.target);
-        if (!href) return;
+        const href = linkHrefToOpen(e);
+        if (!href || doc.getSelection()?.isCollapsed === false) return;
         e.preventDefault();
         e.stopPropagation();
         followLink(resolveLinkHref(href, path), {
@@ -358,15 +353,18 @@ export function HtmlSource({
           openFile: onOpenFileRef.current,
         });
       };
-      // While ⌘ is held, links show as clickable. A constructed sheet lives
-      // outside the DOM, so it can't end up in a save (⌘S holds ⌘ too).
+      // Text links always show as clickable, link cards only while ⌘ is held.
+      // Constructed sheets live outside the DOM, so they can't end up in a
+      // save (⌘S holds ⌘ too).
+      const linkSheet = win ? new win.CSSStyleSheet() : null;
       const linkModSheet = win ? new win.CSSStyleSheet() : null;
-      if (linkModSheet) {
-        linkModSheet.replaceSync(
-          "a[href], [data-link-card] { cursor: pointer; } a[href]:hover { text-decoration-color: currentColor; }",
+      if (linkSheet && linkModSheet) {
+        linkSheet.replaceSync(
+          "a[href] { cursor: pointer; } a[href]:hover { text-decoration-color: currentColor; } [data-link-card] a[href] { cursor: auto; }",
         );
+        linkModSheet.replaceSync("[data-link-card], [data-link-card] a[href] { cursor: pointer; }");
         linkModSheet.disabled = true;
-        doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, linkModSheet];
+        doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, linkSheet, linkModSheet];
       }
       const detachLinkMod = trackLinkModifier(doc, (held) => {
         if (linkModSheet) linkModSheet.disabled = !held;

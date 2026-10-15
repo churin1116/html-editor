@@ -152,7 +152,7 @@ export function EditorShell({
     [dirty, file],
   );
 
-  // ⌘+click on a link to another note (link-open.ts). The href can point
+  // Following a link to another note (link-open.ts). The href can point
   // anywhere — outside every root, or at a file that doesn't exist — so ask
   // the API first: selecting a path it refuses would leave the sidebar and
   // the last-opened cookie pointing at nothing. Select the path the API

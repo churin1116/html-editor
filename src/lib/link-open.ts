@@ -1,10 +1,13 @@
 import { toast } from "sonner";
 
-// ⌘+click (Ctrl+click elsewhere) follows a link from inside either HTML
-// editor. A plain click stays an editing gesture — it puts the caret in the
-// link text or selects a link card — so leaving the spot being edited always
-// takes the modifier, as in VS Code / Obsidian. Shared by the Tiptap editor
-// (editor.tsx) and the rendered full-document view (html-source.tsx).
+// Following a link from inside either HTML editor. Shared by the Tiptap
+// editor (editor.tsx) and the rendered full-document view (html-source.tsx).
+//
+// A click on a text link follows it — no modifier needed. Its text is edited
+// by putting the caret in the plain text beside it and moving in with the
+// arrow keys. Shift / Option clicks stay editing gestures (extend the
+// selection). A link card is a block to select and drag, so a plain click
+// still selects it and ⌘+click (Ctrl+click elsewhere) follows it.
 
 export type LinkTarget =
   | { kind: "external"; url: string }
@@ -12,18 +15,23 @@ export type LinkTarget =
   | { kind: "file"; path: string }
   | { kind: "unsupported"; href: string };
 
-export function isLinkOpenClick(e: MouseEvent): boolean {
-  return e.button === 0 && (e.metaKey || e.ctrlKey);
-}
-
-// The href of the link under a click. A link card counts as a link anywhere
-// on the card: the Tiptap view sets its anchor to pointer-events: none (the
-// card is a block to select and drag), so the click lands on the wrapper.
-export function linkHrefAt(target: EventTarget | null): string | null {
-  const el = target as Element | null;
+// The href a click should follow, or null to leave the click to the editor.
+// A link card counts anywhere on the card: the Tiptap view sets its anchor to
+// pointer-events: none, so the click lands on the wrapper. An href that goes
+// nowhere ("#", javascript:) belongs to a page script, which keeps the click.
+export function linkHrefToOpen(e: MouseEvent): string | null {
+  if (e.button !== 0 || e.shiftKey || e.altKey) return null;
+  const el = e.target as Element | null;
   if (!el?.closest) return null;
-  const a = el.closest("a[href]") ?? el.closest("[data-link-card]")?.querySelector("a[href]");
-  return a?.getAttribute("href") ?? null;
+  const card = el.closest("[data-link-card]");
+  const a = card
+    ? e.metaKey || e.ctrlKey
+      ? card.querySelector("a[href]")
+      : null
+    : el.closest("a[href]");
+  const href = a?.getAttribute("href")?.trim();
+  if (!href || href === "#" || /^javascript:/i.test(href)) return null;
+  return href;
 }
 
 const EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:", "tel:"]);
@@ -97,8 +105,8 @@ export function followLink(
   }
 }
 
-// Report whether the modifier is held, so links can look clickable while it
-// is. Mouse events carry the modifier state too, so holding ⌘ before the
+// Report whether the modifier is held, so link cards can look clickable while
+// it is. Mouse events carry the modifier state too, so holding ⌘ before the
 // pointer enters the editor (focus elsewhere) still shows it.
 export function trackLinkModifier(doc: Document, onHeld: (held: boolean) => void): () => void {
   const win = doc.defaultView;

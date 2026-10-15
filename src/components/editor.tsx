@@ -20,13 +20,7 @@ import {
 } from "@/lib/inline-marks";
 import { type LinkCardMeta, fetchLinkCardMeta, isSingleUrl } from "@/lib/link-card";
 import { LinkCard } from "@/lib/link-card-node";
-import {
-  followLink,
-  isLinkOpenClick,
-  linkHrefAt,
-  resolveLinkHref,
-  trackLinkModifier,
-} from "@/lib/link-open";
+import { followLink, linkHrefToOpen, resolveLinkHref, trackLinkModifier } from "@/lib/link-open";
 import { Aside, Div, Figcaption, Figure, ParagraphClass, Span } from "@/lib/passthrough-nodes";
 import { Rp, Rt, Ruby } from "@/lib/ruby-nodes";
 import { loadScroll, saveScroll } from "@/lib/scroll-memory";
@@ -79,7 +73,7 @@ export function Editor({
   editable?: boolean;
   path?: string;
   previewCss?: string;
-  // ⌘+click on a link to another .html/.md opens it here (link-open.ts).
+  // Following a link to another .html/.md opens it here (link-open.ts).
   onOpenFile?: (path: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -241,17 +235,17 @@ export function Editor({
       // sits) toggles the parent details. Clicks anywhere else on the title
       // row fall through and place the caret so the user can edit the text.
       handleClick: (view, pos, event) => {
-        // ⌘+click follows a link or link card. Handled here, before
-        // ProseMirror's own ⌘+click (select the enclosing node) runs.
-        if (isLinkOpenClick(event)) {
-          const href = linkHrefAt(event.target);
-          if (href) {
-            followLink(resolveLinkHref(href, pathRef.current), {
-              root: view.dom,
-              openFile: onOpenFileRef.current,
-            });
-            return true;
-          }
+        // A click follows a text link, ⌘+click a link card (link-open.ts).
+        // Handled here, before ProseMirror's own ⌘+click (select the
+        // enclosing node) runs. ProseMirror calls this only for a click, not
+        // for a drag that selects part of the link text.
+        const href = linkHrefToOpen(event);
+        if (href) {
+          followLink(resolveLinkHref(href, pathRef.current), {
+            root: view.dom,
+            openFile: onOpenFileRef.current,
+          });
+          return true;
         }
         if (event.detail > 1) return false;
         const target = event.target as HTMLElement;
@@ -481,7 +475,7 @@ export function Editor({
     });
   }, [editor]);
 
-  // Show links as clickable while ⌘ is held (styled in globals.css).
+  // Show link cards as clickable while ⌘ is held (styled in globals.css).
   // biome-ignore lint/correctness/useExhaustiveDependencies: `editor` is intentional — the scroll-container div only mounts after useEditor returns a non-null instance.
   useEffect(() => {
     const el = scrollRef.current;
