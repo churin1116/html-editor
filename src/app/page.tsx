@@ -1,8 +1,8 @@
 import { EditorShell } from "@/components/editor-shell";
-import type { SidebarCollapse } from "@/components/sidebar";
 import { loadAllowedRoots } from "@/lib/allowed-roots";
 import { loadFileFromDisk } from "@/lib/load-file";
 import { loadShortcutTreeWithStatus } from "@/lib/shortcuts";
+import { loadSidebarCollapse } from "@/lib/sidebar-collapse";
 import { type TreeEntry, loadTreeForRoot } from "@/lib/tree";
 import { cookies } from "next/headers";
 
@@ -72,37 +72,10 @@ export default async function Page({
 
   const initialShortcuts = await loadShortcutTreeWithStatus();
 
-  // Collapse state (roots / shortcut folders / tree directories) is stored in
-  // a cookie as compact arrays of collapsed keys, so the first paint renders
-  // folders already closed instead of collapsing them after hydration.
-  const initialCollapse: SidebarCollapse = {
-    roots: {},
-    folders: {},
-    dirs: {},
-    dirDefaultClosed: [],
-    shortcuts: false,
-  };
-  const rawCollapse = cookieStore.get("sidebarCollapse")?.value ?? "";
-  if (rawCollapse) {
-    try {
-      const parsed = JSON.parse(decodeURIComponent(rawCollapse)) as {
-        r?: string[];
-        f?: string[];
-        d?: string[];
-        o?: string[];
-        dd?: string[];
-        s?: 0 | 1;
-      };
-      for (const k of parsed.r ?? []) initialCollapse.roots[k] = true;
-      for (const k of parsed.f ?? []) initialCollapse.folders[k] = true;
-      for (const k of parsed.d ?? []) initialCollapse.dirs[k] = true;
-      for (const k of parsed.o ?? []) initialCollapse.dirs[k] = false;
-      initialCollapse.dirDefaultClosed = parsed.dd ?? [];
-      initialCollapse.shortcuts = parsed.s === 1;
-    } catch {
-      // Corrupt cookie — fall back to the default all-open state.
-    }
-  }
+  // Which folders are closed is read here so the first paint renders them
+  // already closed instead of collapsing them after hydration. Until its first
+  // save it still comes from the cookie it used to live in.
+  const initialCollapse = await loadSidebarCollapse(cookieStore.get("sidebarCollapse")?.value);
 
   return (
     <EditorShell

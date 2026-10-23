@@ -2,6 +2,7 @@
 
 import { confirmDialog, promptDialog } from "@/lib/dialogs";
 import { ACTIONS, type ActionIcon, type ActionId, type EditorMode } from "@/lib/editor-actions";
+import type { SidebarCollapse, SidebarCollapsePatch } from "@/lib/sidebar-collapse";
 import {
   MAX_SEARCH_RESULTS,
   type SearchEntry,
@@ -46,13 +47,16 @@ type DropTargetId = string | "root";
 
 const DRAG_MIME = "application/x-shortcut-move";
 const TREE_DRAG_MIME = "application/x-tree-move";
-// Legacy keys — sidebar UI state now lives in cookies so the server can
-// render the correct state on first paint. Old localStorage values migrate
-// on mount.
+// Legacy keys — sidebar UI state now lives server-side (cookies, and a file
+// for the open/closed state) so the server can render the correct state on
+// first paint. Old localStorage values migrate on mount.
 const COLLAPSE_STORAGE_KEY = "sidebar.collapse.v1";
 const WORKSPACE_STORAGE_KEY = "sidebar.workspace.v1";
 const WORKSPACE_COOKIE = "workspace";
-const COLLAPSE_COOKIE = "sidebarCollapse";
+// The open/closed state used to live in this cookie, until it outgrew the
+// ~4KB a cookie holds (see lib/sidebar-collapse). Deleted after the first
+// save has moved it into the file.
+const LEGACY_COLLAPSE_COOKIE = "sidebarCollapse";
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
 
 function writeWorkspaceCookie(value: string | null) {
@@ -61,64 +65,31 @@ function writeWorkspaceCookie(value: string | null) {
     : `${WORKSPACE_COOKIE}=; path=/; max-age=0; SameSite=Lax`;
 }
 
-// Everything the sidebar keeps collapsed, hydrated server-side from the
-// `sidebarCollapse` cookie so the first paint already shows the right state.
-export type SidebarCollapse = {
-  roots: Record<string, boolean>;
-  folders: Record<string, boolean>;
-  // Directories inside a root's file tree, keyed by absolute path. An entry
-  // is an explicit user choice (true = closed, false = open); directories
-  // without one fall back to their root's default (see dirDefaultClosed).
-  dirs: Record<string, boolean>;
-  // Roots whose tree directories default to collapsed — set when a root is
-  // added, so a freshly registered tree starts fully closed. Only the dirs
-  // the user then opens are stored (as explicit `false` entries), which keeps
-  // the cookie small even for huge trees.
-  dirDefaultClosed: string[];
-  shortcuts: boolean;
-};
-
-// Cookie payload: only the exceptions are stored, as compact arrays.
-// d = explicitly closed dirs, o = explicitly opened dirs, dd = default-closed roots.
-type CollapseCookiePayload = {
-  r: string[];
-  f: string[];
-  d: string[];
-  o: string[];
-  dd: string[];
-  s: 0 | 1;
-};
-
-function collapsedKeys(map: Record<string, boolean>): string[] {
-  return Object.keys(map).filter((k) => map[k]);
+function hasLegacyCollapseCookie(): boolean {
+  return document.cookie.split("; ").some((c) => c.startsWith(`${LEGACY_COLLAPSE_COOKIE}=`));
 }
 
-function writeCollapseCookie(state: SidebarCollapse) {
-  const underDefaultClosedRoot = (p: string) =>
-    state.dirDefaultClosed.some((root) => p === root || p.startsWith(`${root}/`));
-  let payload: CollapseCookiePayload = {
-    r: collapsedKeys(state.roots),
-    f: collapsedKeys(state.folders),
-    // Store only entries that differ from their root's default: "closed"
-    // under a default-open root, "opened" under a default-closed root.
-    d: Object.keys(state.dirs).filter((k) => state.dirs[k] && !underDefaultClosedRoot(k)),
-    o: Object.keys(state.dirs).filter((k) => state.dirs[k] === false && underDefaultClosedRoot(k)),
-    dd: state.dirDefaultClosed,
-    s: state.shortcuts ? 1 : 0,
+// What changed between two collapse states, as the patch the server merges
+// into what it saved; null when nothing did.
+function collapsePatch(
+  before: SidebarCollapse,
+  after: SidebarCollapse,
+): SidebarCollapsePatch | null {
+  const changes = (a: Record<string, boolean>, b: Record<string, boolean>) => {
+    const out: Record<string, boolean | null> = {};
+    for (const k of Object.keys(b)) if (a[k] !== b[k]) out[k] = b[k];
+    for (const k of Object.keys(a)) if (!Object.hasOwn(b, k)) out[k] = null;
+    return Object.keys(out).length > 0 ? out : undefined;
   };
-  let encoded = encodeURIComponent(JSON.stringify(payload));
-  // Cookies cap at ~4KB. Directory paths dominate the payload, so shed those
-  // first — a dropped entry just means that folder reverts to its root's
-  // default state on the next reload.
-  while (encoded.length > 3800 && (payload.d.length > 0 || payload.o.length > 0)) {
-    if (payload.d.length > 0) {
-      payload = { ...payload, d: payload.d.slice(0, Math.floor(payload.d.length / 2)) };
-    } else {
-      payload = { ...payload, o: payload.o.slice(0, Math.floor(payload.o.length / 2)) };
-    }
-    encoded = encodeURIComponent(JSON.stringify(payload));
-  }
-  document.cookie = `${COLLAPSE_COOKIE}=${encoded}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`;
+  const add = after.dirDefaultClosed.filter((r) => !before.dirDefaultClosed.includes(r));
+  const remove = before.dirDefaultClosed.filter((r) => !after.dirDefaultClosed.includes(r));
+  const patch: SidebarCollapsePatch = {
+    folders: changes(before.folders, after.folders),
+    dirs: changes(before.dirs, after.dirs),
+    dirDefaultClosed: add.length > 0 || remove.length > 0 ? { add, remove } : undefined,
+    shortcuts: before.shortcuts !== after.shortcuts ? after.shortcuts : undefined,
+  };
+  return Object.values(patch).some((v) => v !== undefined) ? patch : null;
 }
 
 // Which registered root a tree directory belongs to — the longest matching
@@ -130,6 +101,24 @@ function enclosingRootPath(roots: AllowedRoot[], dirPath: string): string | null
     if (best === null || r.path.length > best.length) best = r.path;
   }
   return best;
+}
+
+// A renamed or moved folder keeps its layout: the open/closed entries of the
+// folder and everything under it follow it to the new path. Entries already
+// under the new path can only be stale (a rename or move never overwrites),
+// so they go.
+function repathCollapsedDirs(
+  dirs: Record<string, boolean>,
+  from: string,
+  to: string,
+): Record<string, boolean> {
+  const within = (p: string, dir: string) => p === dir || p.startsWith(`${dir}/`);
+  const keys = Object.keys(dirs);
+  if (!keys.some((k) => within(k, from) || within(k, to))) return dirs;
+  const next: Record<string, boolean> = {};
+  for (const k of keys) if (!within(k, from) && !within(k, to)) next[k] = dirs[k];
+  for (const k of keys) if (within(k, from)) next[to + k.slice(from.length)] = dirs[k];
+  return next;
 }
 
 function findFolderById(nodes: ShortcutNode[], id: string): ShortcutFolderNode | null {
@@ -382,9 +371,6 @@ export function Sidebar({
   const [showAddForm, setShowAddForm] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [folderContextMenu, setFolderContextMenu] = useState<FolderContextMenuState | null>(null);
-  const [collapsedRoots, setCollapsedRoots] = useState<Record<string, boolean>>(
-    initialCollapse.roots,
-  );
   const [shortcutTree, setShortcutTree] = useState<ShortcutNode[]>(initialShortcuts);
   const [shortcutsCollapsed, setShortcutsCollapsed] = useState(initialCollapse.shortcuts);
   const [addFormFor, setAddFormFor] = useState<AddFormTarget | null>(null);
@@ -404,46 +390,91 @@ export function Sidebar({
   const [reveal, setReveal] = useState<{ path: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // One-time migration from the old localStorage collapse persistence to the
-  // cookie. Only adopted when the cookie hadn't been established yet, so an
-  // already-migrated cookie always wins.
+  // One-time migration from the old localStorage collapse persistence. Only
+  // adopted when nothing had been saved since, so later state always wins.
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs once; initialCollapse never changes after mount
   useEffect(() => {
     try {
       const raw = localStorage.getItem(COLLAPSE_STORAGE_KEY);
       if (!raw) return;
       localStorage.removeItem(COLLAPSE_STORAGE_KEY);
-      const cookieEmpty =
-        Object.keys(initialCollapse.roots).length === 0 &&
+      const nothingSaved =
         Object.keys(initialCollapse.folders).length === 0 &&
         Object.keys(initialCollapse.dirs).length === 0 &&
         initialCollapse.dirDefaultClosed.length === 0 &&
         !initialCollapse.shortcuts;
-      if (!cookieEmpty) return;
+      if (!nothingSaved) return;
       const saved = JSON.parse(raw) as {
-        roots?: Record<string, boolean>;
         folders?: Record<string, boolean>;
         shortcuts?: boolean;
       };
-      if (saved.roots) setCollapsedRoots(saved.roots);
       if (saved.folders) setCollapsedFolders(saved.folders);
       if (typeof saved.shortcuts === "boolean") setShortcutsCollapsed(saved.shortcuts);
     } catch {
-      // Corrupt or unavailable storage — fall back to the cookie state.
+      // Corrupt or unavailable storage — keep the server-provided state.
     }
   }, []);
 
-  // Persist collapse state to the cookie so the server renders the exact
-  // open/closed layout on the next load (no post-hydration flash).
-  useEffect(() => {
-    writeCollapseCookie({
-      roots: collapsedRoots,
+  // Save the open/closed state (see lib/sidebar-collapse) so the server
+  // renders the exact layout on the next load. Each save sends only what
+  // changed since the last one that landed, so tabs don't undo each other's
+  // folds and a failed save goes out again with the next change. One save is
+  // in flight at a time.
+  const collapseState = useMemo<SidebarCollapse>(
+    () => ({
       folders: collapsedFolders,
       dirs: collapsedDirs,
       dirDefaultClosed,
       shortcuts: shortcutsCollapsed,
-    });
-  }, [collapsedRoots, collapsedFolders, collapsedDirs, dirDefaultClosed, shortcutsCollapsed]);
+    }),
+    [collapsedFolders, collapsedDirs, dirDefaultClosed, shortcutsCollapsed],
+  );
+  // `saved` starts as the state the server rendered, so a page load by
+  // itself saves nothing.
+  const collapseSave = useRef({ saved: collapseState, latest: collapseState, busy: false });
+
+  // A state that still came from the old cookie is saved in full right away;
+  // the cookie goes once that save has landed.
+  useEffect(() => {
+    if (hasLegacyCollapseCookie()) {
+      collapseSave.current.saved = {
+        folders: {},
+        dirs: {},
+        dirDefaultClosed: [],
+        shortcuts: false,
+      };
+    }
+  }, []);
+
+  useEffect(() => {
+    const save = collapseSave.current;
+    save.latest = collapseState;
+    if (save.busy) return;
+    save.busy = true;
+    (async () => {
+      for (;;) {
+        const target = save.latest;
+        const patch = collapsePatch(save.saved, target);
+        if (!patch) break;
+        try {
+          const res = await fetch("/api/sidebar-collapse", {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(patch),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          save.saved = target;
+          if (hasLegacyCollapseCookie()) {
+            document.cookie = `${LEGACY_COLLAPSE_COOKIE}=; path=/; max-age=0; SameSite=Lax`;
+          }
+        } catch {
+          toast.error("フォルダの開閉を保存できませんでした", { id: "collapse-save" });
+          break;
+        }
+      }
+      save.busy = false;
+    })();
+  }, [collapseState]);
 
   const toggleFolder = useCallback((folderId: string) => {
     setCollapsedFolders((prev) => ({ ...prev, [folderId]: !prev[folderId] }));
@@ -847,14 +878,10 @@ export function Sidebar({
         const rootPath = enclosingRootPath(roots, targetPath);
         if (rootPath) await reloadTree(rootPath);
         // Carry over what the sidebar tracked by path: the open file (kept as
-        // an unsaved buffer if it was dirty) and this row's collapse state.
+        // an unsaved buffer if it was dirty) and the folder's collapse layout.
         onRenamed?.(targetPath, data.path);
         if (kind === "folder") {
-          setCollapsedDirs((prev) => {
-            if (!(targetPath in prev)) return prev;
-            const { [targetPath]: was, ...rest } = prev;
-            return { ...rest, [data.path]: was };
-          });
+          setCollapsedDirs((prev) => repathCollapsedDirs(prev, targetPath, data.path));
         }
         // Shortcuts pointing at the renamed path are repathed server-side.
         await fetchShortcuts();
@@ -911,7 +938,13 @@ export function Sidebar({
           enclosingRootPath(roots, targetDir),
         ].filter((r, i, all): r is string => r !== null && all.indexOf(r) === i);
         await Promise.all(affected.map((r) => reloadTree(r)));
-        setCollapsedDirs((prev) => ({ ...prev, [targetDir]: false }));
+        // The destination opens; moved folders keep their own layout.
+        setCollapsedDirs((prev) =>
+          moved.reduce((dirs, m) => repathCollapsedDirs(dirs, m.from, m.to), {
+            ...prev,
+            [targetDir]: false,
+          }),
+        );
         for (const m of moved) onRenamed?.(m.from, m.to);
         setMarked([]);
         await fetchShortcuts();
@@ -940,6 +973,23 @@ export function Sidebar({
   }, []);
   useEffect(() => cancelHoverExpand, [cancelHoverExpand]);
 
+  // Folders the current drag opened by hovering. They fold back when the drag
+  // ends, except the folder the item was dropped into and the ones above it,
+  // so the item stays in view where it landed.
+  const dragOpenedRef = useRef<string[]>([]);
+  const foldDragOpened = useCallback((droppedInto: string | null) => {
+    const refold = dragOpenedRef.current.filter(
+      (d) => droppedInto === null || (droppedInto !== d && !droppedInto.startsWith(`${d}/`)),
+    );
+    dragOpenedRef.current = [];
+    if (refold.length === 0) return;
+    setCollapsedDirs((prev) => {
+      const next = { ...prev };
+      for (const d of refold) next[d] = true;
+      return next;
+    });
+  }, []);
+
   const onHoverFolder = useCallback(
     (dirPath: string, isOpen: boolean) => {
       if (hoverExpandRef.current?.dir === dirPath) return;
@@ -947,6 +997,7 @@ export function Sidebar({
       if (isOpen) return;
       const timer = setTimeout(() => {
         hoverExpandRef.current = null;
+        dragOpenedRef.current.push(dirPath);
         setCollapsedDirs((prev) => ({ ...prev, [dirPath]: false }));
       }, HOVER_EXPAND_MS);
       hoverExpandRef.current = { dir: dirPath, timer };
@@ -1023,6 +1074,8 @@ export function Sidebar({
     },
     onDragEnd: () => {
       cancelHoverExpand();
+      // After a drop this finds nothing left: the drop already folded back.
+      foldDragOpened(null);
       setTreeDragging([]);
       setTreeDragOverDir(null);
     },
@@ -1040,6 +1093,7 @@ export function Sidebar({
       e.preventDefault();
       e.stopPropagation();
       cancelHoverExpand();
+      foldDragOpened(targetDir);
       setTreeDragOverDir(null);
       setTreeDragging([]);
 
@@ -1322,7 +1376,7 @@ export function Sidebar({
         return rest;
       });
       // Drop the removed root's collapse bookkeeping so stale paths don't
-      // accumulate in the cookie.
+      // accumulate in the saved state.
       setDirDefaultClosed((prev) => prev.filter((p) => p !== rootPath));
       setCollapsedDirs((prev) => {
         const next: Record<string, boolean> = {};
@@ -1330,11 +1384,6 @@ export function Sidebar({
           if (k !== rootPath && !k.startsWith(`${rootPath}/`)) next[k] = v;
         }
         return next;
-      });
-      setCollapsedRoots((prev) => {
-        if (!(rootPath in prev)) return prev;
-        const { [rootPath]: _, ...rest } = prev;
-        return rest;
       });
       // If the main content shows a file under the removed root, clear it.
       if (selectedPath && (selectedPath === rootPath || selectedPath.startsWith(`${rootPath}/`)))
