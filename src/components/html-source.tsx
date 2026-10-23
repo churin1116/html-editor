@@ -1,5 +1,6 @@
 "use client";
 
+import { type FindEngine, createDomFindEngine } from "@/lib/find-replace";
 import { attachImageResizer } from "@/lib/image-resize";
 import { isSingleUrl } from "@/lib/link-card";
 import { followLink, linkHrefToOpen, resolveLinkHref, trackLinkModifier } from "@/lib/link-open";
@@ -24,7 +25,7 @@ import {
   stripImageExtension,
   uploadImage,
 } from "@/lib/upload-image";
-import { useEffect, useRef } from "react";
+import { type MutableRefObject, useEffect, useRef } from "react";
 import { toast } from "sonner";
 
 // Split a full document into the wrapper around <body>...</body>. Returns null
@@ -86,6 +87,7 @@ export function HtmlSource({
   onSave,
   path,
   onOpenFile,
+  findRef,
 }: {
   content: string;
   onChange: (html: string) => void;
@@ -93,6 +95,9 @@ export function HtmlSource({
   path?: string;
   // Following a link to another .html/.md opens it here (link-open.ts).
   onOpenFile?: (path: string) => void;
+  // Holds the ⌘F engine for the loaded document (lib/find-replace), for the
+  // shell's find bar; null while nothing is loaded.
+  findRef?: MutableRefObject<FindEngine | null>;
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const contentRef = useRef(content);
@@ -190,8 +195,8 @@ export function HtmlSource({
         const key = e.key.toLowerCase();
 
         // App-wide shortcuts belong to the shell, which never sees keystrokes
-        // made inside this iframe — hand them up to it.
-        if (!e.altKey && (key === "p" || key === "\\" || e.code === "Backslash")) {
+        // made inside this iframe — hand them up to it (⌘F opens its find bar).
+        if (!e.altKey && (key === "p" || key === "f" || key === "\\" || e.code === "Backslash")) {
           e.preventDefault();
           window.dispatchEvent(
             new KeyboardEvent("keydown", {
@@ -388,7 +393,11 @@ export function HtmlSource({
       doc.addEventListener("paste", onPaste);
       doc.addEventListener("dragover", onDragOver);
       doc.addEventListener("drop", onDrop);
+      const findEngine = createDomFindEngine(doc);
+      if (findRef) findRef.current = findEngine;
       detach = () => {
+        findEngine.clear();
+        if (findRef?.current === findEngine) findRef.current = null;
         detachResizer();
         detachMdRules();
         detachToolbar();
@@ -422,7 +431,7 @@ export function HtmlSource({
       iframe.removeEventListener("load", attach);
       detach?.();
     };
-  }, [path]);
+  }, [path, findRef]);
 
   // External replacement of the document (e.g. conflict reload from disk):
   // reload the iframe, but ignore our own edit echoes and the value we just

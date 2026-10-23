@@ -3,18 +3,17 @@ import { expandPath } from "@/lib/allowed-roots";
 import { detectFormat } from "@/lib/format";
 import {
   type MoveSource,
-  addFileToTree,
-  addFolderToTree,
-  fileExistsInTree,
+  addNodeToTree,
   findFolder,
   loadShortcutTree,
   loadShortcutTreeWithStatus,
   moveNodeInTree,
   newFolder,
-  removeFileFromTree,
+  pathExistsInTree,
   removeFolderFromTree,
+  removePathFromTree,
   saveShortcutTree,
-  setFileAliasInTree,
+  setAliasInTree,
   setFolderCssInTree,
 } from "@/lib/shortcuts";
 import { NextResponse } from "next/server";
@@ -27,6 +26,8 @@ export async function GET() {
 }
 
 type PostBody = {
+  // "folder" makes a named group; otherwise `path` is added — a file, or a
+  // folder on disk, which is listed with what is inside it.
   kind?: "file" | "folder";
   path?: string;
   name?: string;
@@ -41,7 +42,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  // Backward compatibility: { path } without kind ⇒ kind "file"
+  // Backward compatibility: { path } without kind adds the path, { name }
+  // without kind makes a group.
   const kind: "file" | "folder" = body.kind ?? (body.path ? "file" : body.name ? "folder" : "file");
   const parentId = body.parentId ?? null;
 
@@ -56,7 +58,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing 'name'" }, { status: 400 });
     }
     const folder = newFolder(rawName);
-    const { tree: next, ok } = addFolderToTree(tree, folder, parentId);
+    const { tree: next, ok } = addNodeToTree(tree, folder, parentId);
     if (!ok) {
       return NextResponse.json({ error: "Parent folder not found" }, { status: 404 });
     }
@@ -72,7 +74,28 @@ export async function POST(req: Request) {
   }
   const absolute = expandPath(rawPath);
 
-  if (!detectFormat(absolute)) {
+  let isDir: boolean;
+  try {
+    const s = await stat(absolute);
+    isDir = s.isDirectory();
+    if (!isDir && !s.isFile()) {
+      return NextResponse.json(
+        { error: "Path is not a file or a folder", path: absolute },
+        { status: 400 },
+      );
+    }
+  } catch (err: unknown) {
+    const e = err as NodeJS.ErrnoException;
+    if (e.code === "ENOENT") {
+      return NextResponse.json({ error: "Path does not exist", path: absolute }, { status: 400 });
+    }
+    if (e.code === "EACCES") {
+      return NextResponse.json({ error: "Permission denied", path: absolute }, { status: 400 });
+    }
+    return NextResponse.json({ error: e.message ?? "Unknown error" }, { status: 500 });
+  }
+
+  if (!isDir && !detectFormat(absolute)) {
     return NextResponse.json(
       {
         error: "Unsupported file extension (expected .html or .md)",
@@ -82,30 +105,18 @@ export async function POST(req: Request) {
     );
   }
 
-  try {
-    const s = await stat(absolute);
-    if (!s.isFile()) {
-      return NextResponse.json({ error: "Path is not a file", path: absolute }, { status: 400 });
-    }
-  } catch (err: unknown) {
-    const e = err as NodeJS.ErrnoException;
-    if (e.code === "ENOENT") {
-      return NextResponse.json({ error: "File does not exist", path: absolute }, { status: 400 });
-    }
-    if (e.code === "EACCES") {
-      return NextResponse.json({ error: "Permission denied", path: absolute }, { status: 400 });
-    }
-    return NextResponse.json({ error: e.message ?? "Unknown error" }, { status: 500 });
-  }
-
-  if (fileExistsInTree(tree, absolute)) {
+  if (pathExistsInTree(tree, absolute)) {
     return NextResponse.json(
       { error: "This path is already registered", path: absolute },
       { status: 409 },
     );
   }
 
-  const { tree: next, ok } = addFileToTree(tree, absolute, parentId);
+  const { tree: next, ok } = addNodeToTree(
+    tree,
+    { type: isDir ? "dir" : "file", path: absolute },
+    parentId,
+  );
   if (!ok) {
     return NextResponse.json({ error: "Parent folder not found" }, { status: 404 });
   }
@@ -138,7 +149,7 @@ export async function DELETE(req: Request) {
   }
   const absolute = expandPath(target);
   const tree = await loadShortcutTree();
-  const { tree: next, removed } = removeFileFromTree(tree, absolute);
+  const { tree: next, removed } = removePathFromTree(tree, absolute);
   if (!removed) {
     return NextResponse.json({ error: "Shortcut not found", path: absolute }, { status: 404 });
   }
@@ -150,6 +161,8 @@ type PatchBody = {
   action?: "move" | "rename" | "setFolderCss";
   source?: MoveSource;
   targetFolderId?: string | null;
+  // move: the node to land in front of (null or absent = at the end).
+  before?: MoveSource | null;
   path?: string;
   alias?: string;
   folderId?: string;
@@ -172,7 +185,7 @@ export async function PATCH(req: Request) {
     const absolute = expandPath(rawPath);
     const alias = typeof body.alias === "string" && body.alias.trim() ? body.alias.trim() : null;
     const tree = await loadShortcutTree();
-    const { tree: next, ok } = setFileAliasInTree(tree, absolute, alias);
+    const { tree: next, ok } = setAliasInTree(tree, absolute, alias);
     if (!ok) {
       return NextResponse.json({ error: "Shortcut not found", path: absolute }, { status: 404 });
     }
@@ -204,21 +217,26 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ error: "Unsupported action" }, { status: 400 });
   }
   const source = body.source;
-  if (
-    !source ||
-    (source.kind !== "file" && source.kind !== "folder") ||
-    (source.kind === "file" && !source.path) ||
-    (source.kind === "folder" && !source.id)
-  ) {
+  if (!isMoveRef(source)) {
     return NextResponse.json({ error: "Invalid 'source'" }, { status: 400 });
+  }
+  const before = body.before ?? null;
+  if (before !== null && !isMoveRef(before)) {
+    return NextResponse.json({ error: "Invalid 'before'" }, { status: 400 });
   }
   const targetFolderId = body.targetFolderId ?? null;
 
   const tree = await loadShortcutTree();
-  const { tree: next, ok, reason } = moveNodeInTree(tree, source, targetFolderId);
+  const { tree: next, ok, reason } = moveNodeInTree(tree, source, targetFolderId, before);
   if (!ok) {
     return NextResponse.json({ error: reason ?? "Move failed" }, { status: 400 });
   }
   await saveShortcutTree(next);
   return NextResponse.json({ shortcuts: await loadShortcutTreeWithStatus() });
+}
+
+function isMoveRef(ref: MoveSource | undefined): ref is MoveSource {
+  if (!ref) return false;
+  if (ref.kind === "folder") return Boolean(ref.id);
+  return (ref.kind === "file" || ref.kind === "dir") && Boolean(ref.path);
 }

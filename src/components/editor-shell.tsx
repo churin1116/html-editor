@@ -2,6 +2,7 @@
 
 import { ConflictDialog, type ConflictResolution } from "@/components/conflict-dialog";
 import { Editor } from "@/components/editor";
+import { FindBar } from "@/components/find-bar";
 import { HtmlSource } from "@/components/html-source";
 import { MdEditor } from "@/components/md-editor";
 import { ScriptCopyButton } from "@/components/script-copy-button";
@@ -14,6 +15,7 @@ import {
   applyHtmlAction,
   applyMdAction,
 } from "@/lib/editor-actions";
+import { type FindEngine, createTiptapFindEngine } from "@/lib/find-replace";
 import type { ShortcutNodeWithStatus } from "@/lib/shortcuts";
 import type { SidebarCollapse } from "@/lib/sidebar-collapse";
 import type { TreeEntry } from "@/lib/tree";
@@ -85,10 +87,31 @@ export function EditorShell({
   }, [sidebarOpen]);
   const mdViewRef = useRef<EditorView | null>(null);
   const htmlEditorRef = useRef<TiptapEditor | null>(null);
+  // The rendered view's ⌘F engine, set by HtmlSource for the loaded document.
+  const htmlSourceFindRef = useRef<FindEngine | null>(null);
 
   const mode: EditorMode | null = file?.format ?? null;
   // Full-document HTML is edited as raw source (HtmlSource), not via Tiptap.
   const isHtmlSource = file?.format === "html" && file?.shape === "full-document";
+
+  // The ⌘F bar over an HTML document (find-bar.tsx). Markdown has
+  // CodeMirror's own search panel. The bar closes when another file opens.
+  const [find, setFind] = useState<{ engine: FindEngine; seed: { text: string } } | null>(null);
+  const openFind = useCallback(() => {
+    if (file?.format !== "html") return;
+    const engine =
+      find?.engine ??
+      (isHtmlSource
+        ? htmlSourceFindRef.current
+        : htmlEditorRef.current && createTiptapFindEngine(htmlEditorRef.current));
+    if (!engine) return;
+    setFind({ engine, seed: { text: engine.selectedText() } });
+  }, [file?.format, isHtmlSource, find]);
+  const openPath = file?.path;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: openPath is the trigger — a new file closes the bar
+  useEffect(() => {
+    setFind(null);
+  }, [openPath]);
   // Source mode has no Tiptap selection, so hide the rich-text toolbar actions.
   const toolbarMode: EditorMode | null = isHtmlSource ? null : mode;
 
@@ -366,6 +389,15 @@ export function EditorShell({
         handleSave();
         return;
       }
+      // ⌘F — the find bar over an HTML document. In Markdown, CodeMirror's
+      // panel has already taken it (or, outside the editor, the browser's own
+      // find does).
+      if (key === "f") {
+        if (e.defaultPrevented || mode !== "html") return;
+        e.preventDefault();
+        openFind();
+        return;
+      }
       // ⌘P — jump to the sidebar's file search, opening the sidebar if it's
       // collapsed. The focus is deferred because the input only becomes
       // focusable once the re-render has cleared the aside's aria-hidden — a
@@ -390,7 +422,7 @@ export function EditorShell({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleSave]);
+  }, [handleSave, mode, openFind]);
 
   return (
     <div
@@ -449,6 +481,14 @@ export function EditorShell({
         {file?.format === "html" && (
           <ScriptCopyButton html={draft} title={file.title} path={file.path} />
         )}
+        {find && file?.format === "html" && (
+          <FindBar
+            engine={find.engine}
+            seed={find.seed}
+            canReplace={file.editable}
+            onClose={() => setFind(null)}
+          />
+        )}
         <div className="flex-1 overflow-hidden">
           {file ? (
             file.format === "md" ? (
@@ -468,6 +508,7 @@ export function EditorShell({
                 }}
                 path={file.path}
                 onOpenFile={openLinkedFile}
+                findRef={htmlSourceFindRef}
               />
             ) : (
               <Editor

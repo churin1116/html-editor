@@ -2,7 +2,9 @@
 
 import { DescriptionDetail, DescriptionList, DescriptionTerm } from "@/lib/definition-list";
 import { Details, type DetailsDefaultState, Summary } from "@/lib/details-node";
+import { promptDialog } from "@/lib/dialogs";
 import { applyHtmlAction } from "@/lib/editor-actions";
+import { FindHighlight } from "@/lib/find-replace";
 import { attachImageResizer } from "@/lib/image-resize";
 import {
   Abbr,
@@ -101,6 +103,12 @@ export function Editor({
     detailsPos: number;
     current: DetailsDefaultState;
   } | null>(null);
+  const [cardMenu, setCardMenu] = useState<{
+    x: number;
+    y: number;
+    pos: number;
+    url: string;
+  } | null>(null);
 
   const editor = useEditor({
     extensions: [
@@ -192,6 +200,8 @@ export function Editor({
       SpeechName,
       SpeechBubble,
       EditorShortcuts,
+      // Paints ⌘F matches (find-bar.tsx); never part of the document.
+      FindHighlight,
       Div,
       Aside,
       Figure,
@@ -443,6 +453,27 @@ export function Editor({
     return () => document.removeEventListener("contextmenu", onContextMenu, true);
   }, [editor]);
 
+  // Right-click on a link card opens its own menu: a card is an atom whose
+  // text is rebuilt from its data-* attributes on every save, so its title
+  // can't be typed over. Capture phase, like the summary menu above;
+  // Shift+right-click keeps the native menu.
+  useEffect(() => {
+    if (!editor) return;
+    const onContextMenu = (e: MouseEvent) => {
+      if (e.shiftKey || !editor.isEditable) return;
+      const card = (e.target as HTMLElement).closest?.("[data-link-card]");
+      if (!card || !editor.view.dom.contains(card)) return;
+      const pos = linkCardPos(editor.view, card);
+      if (pos === null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const url = String(editor.state.doc.nodeAt(pos)?.attrs.url ?? "");
+      setCardMenu({ x: e.clientX, y: e.clientY, pos, url });
+    };
+    document.addEventListener("contextmenu", onContextMenu, true);
+    return () => document.removeEventListener("contextmenu", onContextMenu, true);
+  }, [editor]);
+
   // Corner-drag resizing for images: click an <img> to show the handle, drag
   // to resize, and persist the final width into the node's width attribute so
   // it serializes into the saved HTML.
@@ -551,8 +582,173 @@ export function Editor({
           }}
         />
       )}
+      {cardMenu && (
+        <LinkCardMenu
+          x={cardMenu.x}
+          y={cardMenu.y}
+          onClose={() => setCardMenu(null)}
+          onRename={() => {
+            setCardMenu(null);
+            void renameLinkCard(editor, cardMenu.pos, cardMenu.url);
+          }}
+          onRefresh={() => {
+            setCardMenu(null);
+            void refreshLinkCard(editor, cardMenu.pos, cardMenu.url);
+          }}
+        />
+      )}
     </div>
   );
+}
+
+function LinkCardMenu({
+  x,
+  y,
+  onClose,
+  onRename,
+  onRefresh,
+}: {
+  x: number;
+  y: number;
+  onClose: () => void;
+  onRename: () => void;
+  onRefresh: () => void;
+}) {
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (!t.closest?.("[data-link-card-menu]")) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  const MENU_W = 200;
+  const MENU_H = 96;
+  const left = Math.min(x, window.innerWidth - MENU_W - 8);
+  const top = Math.min(y, window.innerHeight - MENU_H - 8);
+  const itemClass =
+    "w-full px-3 py-1.5 text-left text-[12px] text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors";
+
+  return (
+    <div
+      data-link-card-menu
+      role="menu"
+      className="fixed z-50 min-w-[180px] py-1.5 rounded-md fade-in"
+      style={{
+        left,
+        top,
+        background: "var(--surface)",
+        border: "1px solid var(--border-subtle)",
+        boxShadow: "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)",
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+    >
+      <div className="px-3 pt-0.5 pb-1.5 text-[10.5px] tracking-[0.08em] uppercase text-[var(--text-subtle)]">
+        リンクカード
+      </div>
+      <button type="button" role="menuitem" onClick={onRename} className={itemClass}>
+        題名を変更…
+      </button>
+      <button type="button" role="menuitem" onClick={onRefresh} className={itemClass}>
+        情報を取り直す
+      </button>
+    </div>
+  );
+}
+
+// Where the card node rendered as `el` starts. posAtDOM lands on the node or
+// just inside it depending on the DOM, so both are checked (as for images).
+function linkCardPos(view: EditorView, el: Element): number | null {
+  let pos: number;
+  try {
+    pos = view.posAtDOM(el, 0);
+  } catch {
+    return null;
+  }
+  for (const p of [pos, pos - 1]) {
+    if (p >= 0 && view.state.doc.nodeAt(p)?.type.name === "linkCard") return p;
+  }
+  return null;
+}
+
+// The card again after an await: still at `pos` unless the document moved
+// under it, else the card with the same URL nearest to where it was.
+function findLinkCard(doc: EditorView["state"]["doc"], pos: number, url: string): number | null {
+  const at = doc.nodeAt(pos);
+  if (at?.type.name === "linkCard" && at.attrs.url === url) return pos;
+  let best: number | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  doc.descendants((node, p) => {
+    if (node.type.name !== "linkCard") return true;
+    if (node.attrs.url === url && Math.abs(p - pos) < bestDistance) {
+      best = p;
+      bestDistance = Math.abs(p - pos);
+    }
+    return false;
+  });
+  return best;
+}
+
+// The title is the user's to set: a PDF has none to read, and a page's own
+// can be long or unhelpful. Left empty, the card shows its URL again.
+async function renameLinkCard(editor: TiptapEditor, pos: number, url: string) {
+  const current = editor.state.doc.nodeAt(pos)?.attrs.title as string | null | undefined;
+  const value = await promptDialog({
+    title: "カードの題名",
+    description: "空欄にすると URL を表示します。",
+    defaultValue: current ?? "",
+    placeholder: url,
+    confirmLabel: "変更",
+  });
+  if (value === null || editor.isDestroyed) return;
+  const at = findLinkCard(editor.state.doc, pos, url);
+  const node = at === null ? null : editor.state.doc.nodeAt(at);
+  if (at === null || !node) return;
+  editor.view.dispatch(
+    editor.state.tr.setNodeMarkup(at, undefined, { ...node.attrs, title: value.trim() || null }),
+  );
+}
+
+// Reads the page again — for a card made when its page gave nothing back, or
+// whose page has changed since. What the page doesn't give this time keeps
+// its current value, so a title set by hand outlives a page that has none.
+// The URL stays as it was.
+async function refreshLinkCard(editor: TiptapEditor, pos: number, url: string) {
+  const toastId = toast.loading("リンク情報を取得中…");
+  const meta = await fetchLinkCardMeta(url);
+  // Dismissed rather than updated in place (see fetchLinkCardMetaWithToast).
+  toast.dismiss(toastId);
+  if (editor.isDestroyed) return;
+  const at = findLinkCard(editor.state.doc, pos, url);
+  const node = at === null ? null : editor.state.doc.nodeAt(at);
+  if (at === null || !node) return;
+  const attrs = node.attrs;
+  editor.view.dispatch(
+    editor.state.tr.setNodeMarkup(at, undefined, {
+      ...attrs,
+      title: meta.title ?? attrs.title,
+      description: meta.description ?? attrs.description,
+      image: meta.image ?? attrs.image,
+      siteName: meta.siteName ?? attrs.siteName,
+      favicon: meta.favicon ?? attrs.favicon,
+    }),
+  );
+  if (!meta.title) {
+    toast("ページから題名を取れませんでした。「題名を変更」で付けられます", {
+      duration: TOAST_MS,
+    });
+  }
 }
 
 function DetailsDefaultMenu({

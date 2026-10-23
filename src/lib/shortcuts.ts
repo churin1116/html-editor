@@ -4,6 +4,10 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 export type ShortcutFileNode = { type: "file"; path: string; alias?: string };
+// A folder on disk. The sidebar lists what is inside it the way a root's tree
+// does, and everything under it can be opened (lib/fs-safe).
+export type ShortcutDirNode = { type: "dir"; path: string; alias?: string };
+// A named group of shortcuts — it exists only in this list, not on disk.
 export type ShortcutFolderNode = {
   type: "folder";
   id: string;
@@ -14,9 +18,10 @@ export type ShortcutFolderNode = {
   // to the editor preview and never written into the saved HTML.
   cssPath?: string;
 };
-export type ShortcutNode = ShortcutFileNode | ShortcutFolderNode;
+export type ShortcutNode = ShortcutFileNode | ShortcutDirNode | ShortcutFolderNode;
 
 export type ShortcutFileWithStatus = ShortcutFileNode & { exists: boolean };
+export type ShortcutDirWithStatus = ShortcutDirNode & { exists: boolean };
 export type ShortcutFolderWithStatus = {
   type: "folder";
   id: string;
@@ -24,7 +29,10 @@ export type ShortcutFolderWithStatus = {
   children: ShortcutNodeWithStatus[];
   cssPath?: string;
 };
-export type ShortcutNodeWithStatus = ShortcutFileWithStatus | ShortcutFolderWithStatus;
+export type ShortcutNodeWithStatus =
+  | ShortcutFileWithStatus
+  | ShortcutDirWithStatus
+  | ShortcutFolderWithStatus;
 
 type Config = {
   shortcuts: ShortcutNode[];
@@ -47,9 +55,13 @@ function normalizeNode(raw: unknown): ShortcutNode | null {
     }
     return folder;
   }
-  // Legacy or explicit file entry: { path } or { type: "file", path }
+  // Legacy or explicit file entry: { path } or { type: "file", path }; a
+  // folder on disk is { type: "dir", path }.
   if (typeof obj.path === "string") {
-    const node: ShortcutFileNode = { type: "file", path: path.resolve(obj.path) };
+    const node: ShortcutFileNode | ShortcutDirNode = {
+      type: obj.type === "dir" ? "dir" : "file",
+      path: path.resolve(obj.path),
+    };
     if (typeof obj.alias === "string" && obj.alias.trim()) {
       node.alias = obj.alias.trim();
     }
@@ -83,17 +95,21 @@ export function getShortcutsPath(): string {
   return CONFIG_PATH;
 }
 
-export async function loadShortcutPaths(): Promise<string[]> {
+// What the shortcuts reach beyond the roots (lib/fs-safe): each listed file,
+// and everything under each listed folder on disk.
+export async function loadShortcutTargets(): Promise<{ files: string[]; dirs: string[] }> {
   const tree = await loadShortcutTree();
-  const out: string[] = [];
+  const files: string[] = [];
+  const dirs: string[] = [];
   const walk = (nodes: ShortcutNode[]) => {
     for (const n of nodes) {
-      if (n.type === "file") out.push(n.path);
+      if (n.type === "file") files.push(n.path);
+      else if (n.type === "dir") dirs.push(n.path);
       else walk(n.children);
     }
   };
   walk(tree);
-  return out;
+  return { files, dirs };
 }
 
 export async function loadShortcutTreeWithStatus(): Promise<ShortcutNodeWithStatus[]> {
@@ -101,10 +117,10 @@ export async function loadShortcutTreeWithStatus(): Promise<ShortcutNodeWithStat
   const annotate = async (nodes: ShortcutNode[]): Promise<ShortcutNodeWithStatus[]> =>
     Promise.all(
       nodes.map(async (n): Promise<ShortcutNodeWithStatus> => {
-        if (n.type === "file") {
+        if (n.type !== "folder") {
           try {
             const st = await stat(n.path);
-            return { ...n, exists: st.isFile() };
+            return { ...n, exists: n.type === "dir" ? st.isDirectory() : st.isFile() };
           } catch {
             return { ...n, exists: false };
           }
@@ -122,11 +138,12 @@ export async function loadShortcutTreeWithStatus(): Promise<ShortcutNodeWithStat
   return annotate(tree);
 }
 
-export function fileExistsInTree(tree: ShortcutNode[], absolute: string): boolean {
+// A path — a file or a folder on disk — is listed at most once.
+export function pathExistsInTree(tree: ShortcutNode[], absolute: string): boolean {
   for (const n of tree) {
-    if (n.type === "file") {
+    if (n.type !== "folder") {
       if (n.path === absolute) return true;
-    } else if (fileExistsInTree(n.children, absolute)) {
+    } else if (pathExistsInTree(n.children, absolute)) {
       return true;
     }
   }
@@ -135,13 +152,14 @@ export function fileExistsInTree(tree: ShortcutNode[], absolute: string): boolea
 
 // Walk the shortcuts tree for `filePath` and return the cssPath of the
 // deepest folder ancestor that has one. Returns null if the file is not in
-// the tree or no ancestor folder declared a cssPath.
+// the tree or no ancestor folder declared a cssPath. A file inside a listed
+// folder on disk counts as being where that folder is listed.
 export function findFolderCssForPath(tree: ShortcutNode[], filePath: string): string | null {
   let result: string | null = null;
   const walk = (nodes: ShortcutNode[], inherited: string | null): boolean => {
     for (const n of nodes) {
-      if (n.type === "file") {
-        if (n.path === filePath) {
+      if (n.type !== "folder") {
+        if (n.type === "file" ? n.path === filePath : filePath.startsWith(`${n.path}/`)) {
           result = inherited;
           return true;
         }
@@ -166,14 +184,15 @@ export function findFolder(tree: ShortcutNode[], folderId: string): ShortcutFold
   return null;
 }
 
-export function addFileToTree(
+// Appends a file, a folder on disk or a new group at the top level, or inside
+// the group `parentId`.
+export function addNodeToTree(
   tree: ShortcutNode[],
-  absolute: string,
+  node: ShortcutNode,
   parentId: string | null,
 ): { tree: ShortcutNode[]; ok: boolean } {
-  const file: ShortcutFileNode = { type: "file", path: absolute };
   if (parentId === null) {
-    return { tree: [...tree, file], ok: true };
+    return { tree: [...tree, node], ok: true };
   }
   let ok = false;
   const walk = (nodes: ShortcutNode[]): ShortcutNode[] =>
@@ -181,42 +200,22 @@ export function addFileToTree(
       if (n.type !== "folder") return n;
       if (n.id === parentId) {
         ok = true;
-        return { ...n, children: [...n.children, file] };
+        return { ...n, children: [...n.children, node] };
       }
       return { ...n, children: walk(n.children) };
     });
   return { tree: walk(tree), ok };
 }
 
-export function addFolderToTree(
-  tree: ShortcutNode[],
-  folder: ShortcutFolderNode,
-  parentId: string | null,
-): { tree: ShortcutNode[]; ok: boolean } {
-  if (parentId === null) {
-    return { tree: [...tree, folder], ok: true };
-  }
-  let ok = false;
-  const walk = (nodes: ShortcutNode[]): ShortcutNode[] =>
-    nodes.map((n) => {
-      if (n.type !== "folder") return n;
-      if (n.id === parentId) {
-        ok = true;
-        return { ...n, children: [...n.children, folder] };
-      }
-      return { ...n, children: walk(n.children) };
-    });
-  return { tree: walk(tree), ok };
-}
-
-export function removeFileFromTree(
+// Removes the file or folder on disk listed at `absolute`.
+export function removePathFromTree(
   tree: ShortcutNode[],
   absolute: string,
 ): { tree: ShortcutNode[]; removed: boolean } {
   let removed = false;
   const walk = (nodes: ShortcutNode[]): ShortcutNode[] =>
     nodes.flatMap<ShortcutNode>((n) => {
-      if (n.type === "file") {
+      if (n.type !== "folder") {
         if (n.path === absolute) {
           removed = true;
           return [];
@@ -273,7 +272,7 @@ export function setFolderCssInTree(
   return { tree: walk(tree), ok };
 }
 
-export function setFileAliasInTree(
+export function setAliasInTree(
   tree: ShortcutNode[],
   absolute: string,
   alias: string | null,
@@ -281,7 +280,7 @@ export function setFileAliasInTree(
   let ok = false;
   const walk = (nodes: ShortcutNode[]): ShortcutNode[] =>
     nodes.map((n) => {
-      if (n.type === "file") {
+      if (n.type !== "folder") {
         if (n.path !== absolute) return n;
         ok = true;
         if (alias?.trim()) {
@@ -300,7 +299,7 @@ export function setFileAliasInTree(
 // repointed at the new location, so renaming from the sidebar doesn't leave
 // shortcuts dangling. Aliases are kept — the display name is the user's, not
 // the file's.
-export function repathFilesInTree(
+export function repathInTree(
   tree: ShortcutNode[],
   oldPath: string,
   newPath: string,
@@ -322,23 +321,40 @@ export function repathFilesInTree(
   return { tree: walk(tree), changed };
 }
 
-export type MoveSource = { kind: "file"; path: string } | { kind: "folder"; id: string };
+// Names one node of the list: a file or a folder on disk by its path, a group
+// by its id.
+export type MoveSource =
+  | { kind: "file"; path: string }
+  | { kind: "dir"; path: string }
+  | { kind: "folder"; id: string };
 
+function isNode(n: ShortcutNode, ref: MoveSource): boolean {
+  if (ref.kind === "folder") return n.type === "folder" && n.id === ref.id;
+  return n.type !== "folder" && n.type === ref.kind && n.path === ref.path;
+}
+
+function sameRef(a: MoveSource, b: MoveSource): boolean {
+  if (a.kind === "folder") return b.kind === "folder" && b.id === a.id;
+  return b.kind !== "folder" && b.kind === a.kind && b.path === a.path;
+}
+
+// Moves `source` into the group `targetFolderId` (null = the top level),
+// just before the node `before` there — at the end when `before` is null or
+// not among them.
 export function moveNodeInTree(
   tree: ShortcutNode[],
   source: MoveSource,
   targetFolderId: string | null,
+  before: MoveSource | null = null,
 ): { tree: ShortcutNode[]; ok: boolean; reason?: string } {
+  // Dropped just in front of itself: nothing moves.
+  if (before && sameRef(before, source)) return { tree, ok: true };
   // 1. Extract the source node
   let extracted: ShortcutNode | null = null;
   const extract = (nodes: ShortcutNode[]): ShortcutNode[] =>
     nodes.flatMap<ShortcutNode>((n) => {
       if (extracted) return [n];
-      if (source.kind === "file" && n.type === "file" && n.path === source.path) {
-        extracted = n;
-        return [];
-      }
-      if (source.kind === "folder" && n.type === "folder" && n.id === source.id) {
+      if (isNode(n, source)) {
         extracted = n;
         return [];
       }
@@ -366,18 +382,23 @@ export function moveNodeInTree(
   }
 
   // 3. Insert into target
+  const node: ShortcutNode = extracted;
+  const place = (siblings: ShortcutNode[]): ShortcutNode[] => {
+    const at = before ? siblings.findIndex((n) => isNode(n, before)) : -1;
+    return at === -1
+      ? [...siblings, node]
+      : [...siblings.slice(0, at), node, ...siblings.slice(at)];
+  };
   if (targetFolderId === null) {
-    next = [...next, extracted];
-    return { tree: next, ok: true };
+    return { tree: place(next), ok: true };
   }
   let inserted = false;
-  const node = extracted;
   const insert = (nodes: ShortcutNode[]): ShortcutNode[] =>
     nodes.map((n) => {
       if (n.type !== "folder") return n;
       if (n.id === targetFolderId) {
         inserted = true;
-        return { ...n, children: [...n.children, node] };
+        return { ...n, children: place(n.children) };
       }
       return { ...n, children: insert(n.children) };
     });

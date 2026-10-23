@@ -1,7 +1,7 @@
 import { rename as fsRename, stat } from "node:fs/promises";
 import path from "node:path";
 import { PathNotAllowedError, resolveSafePath } from "@/lib/fs-safe";
-import { loadShortcutTree, repathFilesInTree, saveShortcutTree } from "@/lib/shortcuts";
+import { loadShortcutTree, repathInTree, saveShortcutTree } from "@/lib/shortcuts";
 
 const EDITABLE_EXT_RE = /\.(html?|md|markdown)$/i;
 
@@ -114,7 +114,7 @@ async function commitMove(from: string, to: string, fromIno: number): Promise<Re
   await fsRename(from, to);
 
   const tree = await loadShortcutTree();
-  const { tree: next, changed } = repathFilesInTree(tree, from, to);
+  const { tree: next, changed } = repathInTree(tree, from, to);
   if (changed > 0) await saveShortcutTree(next);
 
   return { ok: true, path: to };

@@ -6,12 +6,27 @@
 // scrolls the row into view while the page is still loading (revealOpenFile).
 
 import type { SidebarCollapse } from "@/lib/sidebar-collapse";
+import { ancestorDirPaths } from "@/lib/sidebar-search";
 
 // Structural, so the server and the Sidebar can each pass their own nodes.
 type RevealTreeEntry = { path: string; type: "file" | "directory"; children?: RevealTreeEntry[] };
 type RevealShortcut =
   | { type: "file"; path: string }
+  | { type: "dir"; path: string }
   | { type: "folder"; id: string; children: RevealShortcut[] };
+
+// A folder on disk listed as a shortcut keeps the open/closed state of its own
+// row with the shortcut folders', under this key — apart from the same
+// folder's row in a root's tree. The folders inside it share the tree's state.
+export function dirShortcutFoldKey(path: string): string {
+  return `dir:${path}`;
+}
+
+// Whether the folders inside `path` start out closed: true under a root that
+// was registered with its folders closed (see SidebarCollapse.dirDefaultClosed).
+export function closedByDefault(dirDefaultClosed: string[], path: string): boolean {
+  return dirDefaultClosed.some((root) => path === root || path.startsWith(`${root}/`));
+}
 
 // Folders that have to be open for `path`'s row to show in this tree,
 // outermost first; null when the tree doesn't list the file.
@@ -38,8 +53,27 @@ export function shortcutFolderChain(
   for (const n of nodes) {
     if (n.type === "file") {
       if (n.path === path) return trail;
-    } else {
+    } else if (n.type === "folder") {
       const found = shortcutFolderChain(n.children, path, [...trail, n.id]);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+// The folder on disk listed as a shortcut that holds `path` (or is it), and
+// the ids of the shortcut folders around it, outermost first. null when no
+// listed folder holds the path.
+export function shortcutDirChain(
+  nodes: RevealShortcut[],
+  path: string,
+  trail: string[] = [],
+): { dir: string; chain: string[] } | null {
+  for (const n of nodes) {
+    if (n.type === "dir") {
+      if (path === n.path || path.startsWith(`${n.path}/`)) return { dir: n.path, chain: trail };
+    } else if (n.type === "folder") {
+      const found = shortcutDirChain(n.children, path, [...trail, n.id]);
       if (found) return found;
     }
   }
@@ -48,8 +82,9 @@ export function shortcutFolderChain(
 
 // The folds a page opens with: as saved, except that whatever hides the open
 // file is open — the folders on its path in the first visible tree that lists
-// it, or, for a file listed only as a shortcut, its shortcut folders and the
-// Shortcuts section. The Sidebar saves the difference like any other fold.
+// it, or, for a file listed only as a shortcut (or inside a folder listed as
+// one), what holds it in the Shortcuts section. The Sidebar saves the
+// difference like any other fold.
 export function unfoldToOpenFile(
   collapse: SidebarCollapse,
   path: string | null,
@@ -70,12 +105,30 @@ export function unfoldToOpenFile(
     return { ...collapse, dirs };
   }
   const chain = shortcutFolderChain(shortcuts, path);
-  if (!chain) return collapse;
-  const closed = chain.filter((id) => collapse.folders[id]);
-  if (closed.length === 0 && !collapse.shortcuts) return collapse;
+  if (chain) {
+    const closed = chain.filter((id) => collapse.folders[id]);
+    if (closed.length === 0 && !collapse.shortcuts) return collapse;
+    const folders = { ...collapse.folders };
+    for (const id of closed) folders[id] = false;
+    return { ...collapse, folders, shortcuts: false };
+  }
+  // Inside a folder listed as a shortcut: that folder's row, and the folders
+  // between it and the file.
+  const inDir = shortcutDirChain(shortcuts, path);
+  if (!inDir) return collapse;
+  const closedRows = [...inDir.chain, dirShortcutFoldKey(inDir.dir)].filter(
+    (id) => collapse.folders[id],
+  );
+  const byDefault = closedByDefault(collapse.dirDefaultClosed, inDir.dir);
+  const closedDirs = ancestorDirPaths(inDir.dir, path).filter(
+    (dir) => collapse.dirs[dir] ?? byDefault,
+  );
+  if (closedRows.length === 0 && closedDirs.length === 0 && !collapse.shortcuts) return collapse;
   const folders = { ...collapse.folders };
-  for (const id of closed) folders[id] = false;
-  return { ...collapse, folders, shortcuts: false };
+  for (const id of closedRows) folders[id] = false;
+  const dirs = { ...collapse.dirs };
+  for (const dir of closedDirs) dirs[dir] = false;
+  return { ...collapse, folders, dirs, shortcuts: false };
 }
 
 // Scrolls the sidebar so the open file's row is in view. It runs as an inline
