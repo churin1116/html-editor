@@ -5,7 +5,7 @@ import { Editor } from "@/components/editor";
 import { HtmlSource } from "@/components/html-source";
 import { MdEditor } from "@/components/md-editor";
 import { ScriptCopyButton } from "@/components/script-copy-button";
-import { Sidebar, type SidebarCollapse } from "@/components/sidebar";
+import { Sidebar } from "@/components/sidebar";
 import type { AllowedRoot } from "@/lib/allowed-roots";
 import { confirmDialog } from "@/lib/dialogs";
 import {
@@ -15,6 +15,7 @@ import {
   applyMdAction,
 } from "@/lib/editor-actions";
 import type { ShortcutNodeWithStatus } from "@/lib/shortcuts";
+import type { SidebarCollapse } from "@/lib/sidebar-collapse";
 import type { TreeEntry } from "@/lib/tree";
 import type { EditorView } from "@codemirror/view";
 import type { Editor as TiptapEditor } from "@tiptap/react";
