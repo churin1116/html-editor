@@ -10,7 +10,7 @@ import {
   buildSearchIndex,
   searchEntries,
 } from "@/lib/sidebar-search";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 type AllowedRoot = { label: string; path: string };
@@ -1594,6 +1594,7 @@ export function Sidebar({
           })}
         </div>
       </div>
+      <RowNameTip containerRef={scrollRef} />
       {/* `relative` so the search popup can span the sidebar rather than the
           narrow flex cell the input occupies. */}
       <div className="relative border-t border-[var(--border-subtle)] px-3 py-2 flex items-center gap-1">
@@ -2726,7 +2727,7 @@ function DirectoryNode({
               <span className={`tree-dir-chevron ${open ? "is-open" : ""}`}>
                 <ChevronIcon />
               </span>
-              <span className="truncate">{entry.name}</span>
+              <span className="tree-name truncate">{entry.name}</span>
             </button>
             <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover/row:opacity-100 focus-within:opacity-100">
               <NewNodeButton kind="file" onClick={() => newNode.onStart(entry.path, "file")} />
@@ -2852,7 +2853,6 @@ function FileNode({
         onDragEnd={dnd.onDragEnd}
         className={`tree-item ${isSelected ? "is-selected" : ""}`}
         style={{ paddingLeft: `${depth * 12 + 14}px`, paddingRight: "28px" }}
-        title={entry.path}
       >
         <span
           className={`file-icon ${isMd ? "file-icon-md" : "file-icon-html"} flex-shrink-0`}
@@ -2860,12 +2860,114 @@ function FileNode({
         >
           {isMd ? <MdIcon /> : <HtmlIcon />}
         </span>
-        <span className="truncate flex-1">{display}</span>
+        <span className="tree-name truncate flex-1">{display}</span>
       </button>
       <CopyPathButton
         path={entry.path}
         className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100"
       />
+    </div>
+  );
+}
+
+// Hover card for sidebar rows. The 300px column cuts long names off, so when a
+// row's `.tree-name` label is truncated the card spells out the whole name —
+// just the name, not the path. One set of listeners on the scroll area serves
+// every row.
+type RowTip = { name: string; left: number; below: number; above: number };
+
+function RowNameTip({ containerRef }: { containerRef: React.RefObject<HTMLDivElement | null> }) {
+  const [tip, setTip] = useState<RowTip | null>(null);
+  const tipRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    // The row button under the pointer. It stays set after a click hides the
+    // card, so the same row doesn't pop it back up until the pointer leaves.
+    let anchor: HTMLElement | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let shown = false;
+    const clear = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      if (shown) {
+        shown = false;
+        setTip(null);
+      }
+    };
+    const release = () => {
+      clear();
+      anchor = null;
+    };
+    const show = (row: HTMLElement, label: HTMLElement) => {
+      // A name that fits is already readable in the row.
+      if (label.scrollWidth <= label.clientWidth) return;
+      const rowBox = row.getBoundingClientRect();
+      shown = true;
+      setTip({
+        name: label.textContent ?? "",
+        // Line the card's text up with the label's (the card has 8px padding).
+        left: label.getBoundingClientRect().left - 8,
+        below: rowBox.bottom + 4,
+        above: rowBox.top - 4,
+      });
+    };
+    const onOver = (e: MouseEvent) => {
+      const row = e.target instanceof Element ? e.target.closest<HTMLElement>("button") : null;
+      if (row === anchor) return;
+      // Once a card is up, sliding to the next row swaps it without the delay.
+      const warm = shown;
+      clear();
+      anchor = row;
+      const label = row?.querySelector<HTMLElement>(":scope > .tree-name");
+      if (!row || !label) return;
+      if (warm) show(row, label);
+      else timer = setTimeout(() => show(row, label), 400);
+    };
+    container.addEventListener("mouseover", onOver);
+    container.addEventListener("mouseleave", release);
+    container.addEventListener("scroll", clear);
+    container.addEventListener("mousedown", clear);
+    container.addEventListener("contextmenu", clear);
+    container.addEventListener("dragstart", clear);
+    window.addEventListener("blur", release);
+    return () => {
+      release();
+      container.removeEventListener("mouseover", onOver);
+      container.removeEventListener("mouseleave", release);
+      container.removeEventListener("scroll", clear);
+      container.removeEventListener("mousedown", clear);
+      container.removeEventListener("contextmenu", clear);
+      container.removeEventListener("dragstart", clear);
+      window.removeEventListener("blur", release);
+    };
+  }, [containerRef]);
+
+  // Below the row by default; above it when that would run off the window.
+  // Set here rather than in `style` because it depends on the card's height.
+  useLayoutEffect(() => {
+    const el = tipRef.current;
+    if (!el || !tip) return;
+    const h = el.offsetHeight;
+    const top = tip.below + h > window.innerHeight - 8 ? Math.max(8, tip.above - h) : tip.below;
+    el.style.top = `${top}px`;
+  }, [tip]);
+
+  if (!tip) return null;
+  return (
+    <div
+      ref={tipRef}
+      role="tooltip"
+      className="fixed z-50 px-2 py-1.5 rounded-md fade-in pointer-events-none text-[12.5px] text-[var(--text)] [overflow-wrap:anywhere]"
+      style={{
+        left: tip.left,
+        maxWidth: Math.min(420, window.innerWidth - tip.left - 12),
+        background: "var(--surface)",
+        boxShadow: "0 8px 24px rgba(0,0,0,0.16), 0 1px 4px rgba(0,0,0,0.08)",
+      }}
+    >
+      {tip.name}
     </div>
   );
 }
@@ -3322,7 +3424,7 @@ function ShortcutFolderItem({
           <span className="file-icon flex-shrink-0" aria-hidden="true">
             <FolderIcon open={open} />
           </span>
-          <span className="truncate">{folder.name}</span>
+          <span className="tree-name truncate">{folder.name}</span>
           {folder.cssPath && (
             <span
               className="ml-1.5 flex-shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-[var(--primary)]"
@@ -3418,11 +3520,6 @@ function ShortcutItem({
   const missing = file.exists === false;
   const isDragging = dnd.source?.kind === "file" && dnd.source.path === file.path;
   const isEditing = rename.editingPath === file.path;
-  const titleParts = [
-    missing ? "ファイルが見つかりません" : null,
-    file.alias ? `元ファイル: ${filename}` : null,
-    file.path,
-  ].filter(Boolean);
   return (
     <div
       className={`tree-row group/shortcut ${isDragging ? "opacity-50" : ""}`}
@@ -3452,7 +3549,6 @@ function ShortcutItem({
             onDragEnd={dnd.onDragEnd}
             className={`tree-item ${isSelected ? "is-selected" : ""} ${missing ? "is-missing" : ""}`}
             style={{ paddingLeft: `${depth * 12 + 14}px`, paddingRight: "52px" }}
-            title={titleParts.join("\n")}
           >
             <span
               className={`file-icon ${isMd ? "file-icon-md" : "file-icon-html"} flex-shrink-0`}
@@ -3460,7 +3556,7 @@ function ShortcutItem({
             >
               {missing ? <MissingIcon /> : isMd ? <MdIcon /> : <HtmlIcon />}
             </span>
-            <span className="truncate flex-1">{display}</span>
+            <span className="tree-name truncate flex-1">{display}</span>
           </button>
           <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
             <CopyPathButton
