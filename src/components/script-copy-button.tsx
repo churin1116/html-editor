@@ -38,7 +38,7 @@ export function ScriptCopyButton({
     <button
       type="button"
       onClick={copy}
-      className="script-copy-button absolute top-3 right-5 z-30 inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-[12px] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors bg-[var(--surface)] border border-[var(--border-subtle)] shadow-sm"
+      className="script-copy-button absolute top-3 right-5 z-30 inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-[12px] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors bg-[var(--surface)] shadow-sm"
       title="メモ App にそのまま貼れる形でコピー（プロンプター用）"
     >
       <CopyIcon />
