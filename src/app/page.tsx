@@ -1,7 +1,7 @@
 import { EditorShell } from "@/components/editor-shell";
 import { loadAllowedRoots } from "@/lib/allowed-roots";
 import { loadFileFromDisk } from "@/lib/load-file";
-import { loadShortcutTreeWithStatus } from "@/lib/shortcuts";
+import { type ShortcutNodeWithStatus, loadShortcutTreeWithStatus } from "@/lib/shortcuts";
 import { loadSidebarCollapse } from "@/lib/sidebar-collapse";
 import { unfoldToOpenFile } from "@/lib/sidebar-reveal";
 import { type TreeEntry, loadTreeForRoot } from "@/lib/tree";
@@ -57,21 +57,33 @@ export default async function Page({
     : null;
 
   const visibleRoots = activeRoot ? [activeRoot] : roots;
+  const initialShortcuts = await loadShortcutTreeWithStatus();
+
+  // Folders listed as shortcuts show what is inside them too. Their trees go
+  // in the same maps as the roots', keyed by path.
+  const dirShortcuts: string[] = [];
+  const collectDirs = (nodes: ShortcutNodeWithStatus[]) => {
+    for (const n of nodes) {
+      if (n.type === "dir") dirShortcuts.push(n.path);
+      else if (n.type === "folder") collectDirs(n.children);
+    }
+  };
+  collectDirs(initialShortcuts);
+
   const initialTrees: Record<string, TreeEntry[]> = {};
   const initialRootErrors: Record<string, string> = {};
   const initialTreeTruncated: Record<string, boolean> = {};
+  const treePaths = new Set([...visibleRoots.map((r) => r.path), ...dirShortcuts]);
   await Promise.all(
-    visibleRoots.map(async (root) => {
-      const result = await loadTreeForRoot(root.path);
-      if ("error" in result) initialRootErrors[root.path] = result.error;
+    [...treePaths].map(async (treePath) => {
+      const result = await loadTreeForRoot(treePath);
+      if ("error" in result) initialRootErrors[treePath] = result.error;
       else {
-        initialTrees[root.path] = result.tree;
-        if (result.truncated) initialTreeTruncated[root.path] = true;
+        initialTrees[treePath] = result.tree;
+        if (result.truncated) initialTreeTruncated[treePath] = true;
       }
     }),
   );
-
-  const initialShortcuts = await loadShortcutTreeWithStatus();
 
   // Which folders are closed is read here so the first paint renders them
   // already closed instead of collapsing them after hydration. Until its first

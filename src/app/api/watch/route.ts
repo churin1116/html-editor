@@ -2,6 +2,7 @@ import { exec } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import { loadAllowedRoots } from "@/lib/allowed-roots";
+import { loadShortcutTargets } from "@/lib/shortcuts";
 import chokidar from "chokidar";
 import type { NextRequest } from "next/server";
 
@@ -41,9 +42,14 @@ async function networkMountPoints(): Promise<string[]> {
 export async function GET(req: NextRequest) {
   const roots = await loadAllowedRoots();
   const netMounts = await networkMountPoints();
-  const rootPaths = roots
-    .map((r) => r.path)
-    .filter((p) => !netMounts.some((mp) => p === mp || p.startsWith(`${mp}/`)));
+  const within = (p: string, dir: string) => p === dir || p.startsWith(`${dir}/`);
+  // Folders listed as shortcuts show their contents too, so they are watched
+  // like roots — unless a root already covers them.
+  const { dirs } = await loadShortcutTargets();
+  const rootPaths = [
+    ...roots.map((r) => r.path),
+    ...dirs.filter((d) => !roots.some((r) => within(d, r.path))),
+  ].filter((p) => !netMounts.some((mp) => within(p, mp)));
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {

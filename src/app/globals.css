@@ -130,6 +130,21 @@ button {
   background: color-mix(in srgb, var(--text) 4%, transparent);
   color: var(--text);
 }
+/* A folder listed as a shortcut that is gone from disk — marked like a
+   missing file shortcut. */
+.tree-dir.is-missing,
+.tree-dir.is-missing:hover {
+  color: var(--text-subtle);
+}
+.tree-dir.is-missing > span:last-child {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in srgb, var(--text-subtle) 60%, transparent);
+}
+.tree-dir.is-missing .file-icon {
+  color: var(--danger);
+  opacity: 0.75;
+}
 
 /* Wrapper for a tree row and its trailing action icons. The icons are siblings
    of the row button (buttons can't nest), so the button loses :hover while the

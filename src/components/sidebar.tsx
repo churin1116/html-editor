@@ -3,7 +3,14 @@
 import { confirmDialog, promptDialog } from "@/lib/dialogs";
 import { ACTIONS, type ActionIcon, type ActionId, type EditorMode } from "@/lib/editor-actions";
 import type { SidebarCollapse, SidebarCollapsePatch } from "@/lib/sidebar-collapse";
-import { OPEN_FILE_REVEAL_SCRIPT, revealOpenFile, shortcutFolderChain } from "@/lib/sidebar-reveal";
+import {
+  OPEN_FILE_REVEAL_SCRIPT,
+  closedByDefault,
+  dirShortcutFoldKey,
+  revealOpenFile,
+  shortcutDirChain,
+  shortcutFolderChain,
+} from "@/lib/sidebar-reveal";
 import {
   MAX_SEARCH_RESULTS,
   type SearchEntry,
@@ -22,6 +29,13 @@ type ShortcutFileNode = {
   alias?: string;
   exists?: boolean;
 };
+// A folder on disk, listed with what is inside it.
+type ShortcutDirNode = {
+  type: "dir";
+  path: string;
+  alias?: string;
+  exists?: boolean;
+};
 type ShortcutFolderNode = {
   type: "folder";
   id: string;
@@ -29,21 +43,25 @@ type ShortcutFolderNode = {
   children: ShortcutNode[];
   cssPath?: string;
 };
-type ShortcutNode = ShortcutFileNode | ShortcutFolderNode;
+type ShortcutNode = ShortcutFileNode | ShortcutDirNode | ShortcutFolderNode;
 type AddFormTarget = { parentId: string | null; kind: "file" | "folder" };
 // Inline "new HTML file / new folder" draft row inside a tree directory
 // (VS Code-style). `draft` names the directory the open row belongs to and
 // what it creates; `onSubmit` resolves to an error message to keep the row
-// open, or null on success.
+// open, or null on success. `tree` is the tree whose row asked for it (see
+// treeApis): the same folder can show in two trees, and only one gets the row.
 type NewNodeKind = "file" | "folder";
-type NewNodeDraft = { dir: string; kind: NewNodeKind };
+type NewNodeDraft = { dir: string; kind: NewNodeKind; tree: string };
 type NewNodeAPI = {
   draft: NewNodeDraft | null;
   onStart: (dirPath: string, kind: NewNodeKind) => void;
   onSubmit: (dirPath: string, kind: NewNodeKind, name: string) => Promise<string | null>;
   onCancel: () => void;
 };
-type MoveSource = { kind: "file"; path: string } | { kind: "folder"; id: string };
+type MoveSource =
+  | { kind: "file"; path: string }
+  | { kind: "dir"; path: string }
+  | { kind: "folder"; id: string };
 type DropTargetId = string | "root";
 
 const DRAG_MIME = "application/x-shortcut-move";
@@ -93,17 +111,6 @@ function collapsePatch(
   return Object.values(patch).some((v) => v !== undefined) ? patch : null;
 }
 
-// Which registered root a tree directory belongs to — the longest matching
-// prefix, so a root nested inside another still resolves to itself.
-function enclosingRootPath(roots: AllowedRoot[], dirPath: string): string | null {
-  let best: string | null = null;
-  for (const r of roots) {
-    if (dirPath !== r.path && !dirPath.startsWith(`${r.path}/`)) continue;
-    if (best === null || r.path.length > best.length) best = r.path;
-  }
-  return best;
-}
-
 // A renamed or moved folder keeps its layout: the open/closed entries of the
 // folder and everything under it follow it to the new path. Entries already
 // under the new path can only be stale (a rename or move never overwrites),
@@ -122,6 +129,23 @@ function repathCollapsedDirs(
   return next;
 }
 
+// The same for the rows of folders listed as shortcuts, whose entries sit
+// among the shortcut folders' under dirShortcutFoldKey.
+function repathDirShortcutFolds(
+  folders: Record<string, boolean>,
+  from: string,
+  to: string,
+): Record<string, boolean> {
+  const fromKey = dirShortcutFoldKey(from);
+  const moves = (k: string) => k === fromKey || k.startsWith(`${fromKey}/`);
+  if (!Object.keys(folders).some(moves)) return folders;
+  const next: Record<string, boolean> = {};
+  for (const [k, v] of Object.entries(folders)) {
+    next[moves(k) ? dirShortcutFoldKey(to) + k.slice(fromKey.length) : k] = v;
+  }
+  return next;
+}
+
 function findFolderById(nodes: ShortcutNode[], id: string): ShortcutFolderNode | null {
   for (const n of nodes) {
     if (n.type !== "folder") continue;
@@ -137,9 +161,31 @@ function findFolderById(nodes: ShortcutNode[], id: string): ShortcutFolderNode |
 function collectFilePaths(nodes: ShortcutNode[], acc: string[] = []): string[] {
   for (const n of nodes) {
     if (n.type === "file") acc.push(n.path);
-    else collectFilePaths(n.children, acc);
+    else if (n.type === "folder") collectFilePaths(n.children, acc);
   }
   return acc;
+}
+
+// Folders on disk listed as shortcuts, in list order.
+function collectDirPaths(nodes: ShortcutNode[], acc: string[] = []): string[] {
+  for (const n of nodes) {
+    if (n.type === "dir") acc.push(n.path);
+    else if (n.type === "folder") collectDirPaths(n.children, acc);
+  }
+  return acc;
+}
+
+// Whether `p` can still be opened: under a root, listed as a shortcut, or
+// inside a folder listed as one — the rule the server goes by (lib/fs-safe).
+function isReachable(p: string, roots: AllowedRoot[], shortcuts: ShortcutNode[]): boolean {
+  const within = (dir: string) => p === dir || p.startsWith(`${dir}/`);
+  if (roots.some((r) => within(r.path))) return true;
+  const listed = (nodes: ShortcutNode[]): boolean =>
+    nodes.some((n) => {
+      if (n.type === "folder") return listed(n.children);
+      return n.type === "dir" ? within(n.path) : n.path === p;
+    });
+  return listed(shortcuts);
 }
 
 function isInvalidDrop(
@@ -173,7 +219,13 @@ type RenameAPI = {
   onCancel: () => void;
 };
 
-type ShortcutContextMenuOpener = (x: number, y: number, path: string, alias?: string) => void;
+type ShortcutContextMenuOpener = (
+  x: number,
+  y: number,
+  path: string,
+  alias?: string,
+  nodeType?: "file" | "directory",
+) => void;
 type TreeContextMenuOpener = (
   x: number,
   y: number,
@@ -192,9 +244,13 @@ type ContextMenuState = {
   path: string;
   source: "root" | "shortcut";
   alias?: string;
-  // Tree rows only ("root"): what the row points at, so the menu can offer the
-  // right rename (a file and a folder go to different endpoints).
+  // What the row points at. Tree rows ("root") need it to offer the right
+  // rename (a file and a folder go to different endpoints); shortcut rows to
+  // say "元ファイル" or "元フォルダ".
   nodeType?: "file" | "directory";
+  // Tree rows only: which tree the row is in (see treeApis), so a rename
+  // started here opens its field in this tree only.
+  tree?: string;
 };
 
 // Renaming an actual file/folder on disk from a tree row — distinct from
@@ -304,6 +360,32 @@ type FolderContextMenuState = {
 };
 
 type FolderContextMenuOpener = (x: number, y: number, folder: ShortcutFolderNode) => void;
+
+// What a tree's context menu and inline fields hand back to the Sidebar,
+// bound to that one tree (see treeApis).
+type TreeApis = {
+  onContextMenu: TreeContextMenuOpener;
+  newNode: NewNodeAPI;
+  rename: TreeRenameAPI;
+};
+
+// What a folder on disk listed as a shortcut needs to show its tree under its
+// row — the plumbing a root's tree gets. Its tree, error and truncation flag
+// sit in the maps the roots' do, keyed by the folder's path.
+type DirShortcutView = {
+  trees: Record<string, TreeEntry[]>;
+  errors: Record<string, string>;
+  truncated: Record<string, boolean>;
+  isOpen: (path: string) => boolean;
+  onToggle: (path: string) => void;
+  onOpen: (path: string) => void;
+  dirsDefaultCollapsed: (path: string) => boolean;
+  collapsedDirs: Record<string, boolean>;
+  onToggleDir: (path: string, collapse: boolean) => void;
+  treeApis: (path: string) => TreeApis;
+  dnd: TreeDnD;
+  marks: TreeMarksAPI;
+};
 
 export function Sidebar({
   selectedPath,
@@ -473,14 +555,17 @@ export function Sidebar({
     setCollapsedDirs((prev) => ({ ...prev, [dirPath]: collapse }));
   }, []);
 
-  const openContextMenu = useCallback<TreeContextMenuOpener>((x, y, path, nodeType) => {
-    setFolderContextMenu(null);
-    setContextMenu({ x, y, path, source: "root", nodeType });
-  }, []);
-  const openShortcutContextMenu = useCallback(
-    (x: number, y: number, path: string, alias?: string) => {
+  const openContextMenu = useCallback(
+    (x: number, y: number, path: string, nodeType: "file" | "directory", tree: string) => {
       setFolderContextMenu(null);
-      setContextMenu({ x, y, path, source: "shortcut", alias });
+      setContextMenu({ x, y, path, source: "root", nodeType, tree });
+    },
+    [],
+  );
+  const openShortcutContextMenu = useCallback<ShortcutContextMenuOpener>(
+    (x, y, path, alias, nodeType) => {
+      setFolderContextMenu(null);
+      setContextMenu({ x, y, path, source: "shortcut", alias, nodeType });
     },
     [],
   );
@@ -611,9 +696,52 @@ export function Sidebar({
     }
   }, [visibleRoots, reloadTree, refreshKey]);
 
+  // Folders on disk listed as shortcuts. Every fetch of the list makes a new
+  // tree, so the paths go through a string first: the array changes only when
+  // the folders do, and the effects below don't rerun on every fetch.
+  const dirShortcutsKey = useMemo(
+    () => JSON.stringify(collectDirPaths(shortcutTree)),
+    [shortcutTree],
+  );
+  const dirShortcuts = useMemo(() => JSON.parse(dirShortcutsKey) as string[], [dirShortcutsKey]);
+
+  // Their trees load like the roots', into the same maps. The server rendered
+  // the ones listed when the page loaded; one listed later (added, or renamed
+  // on disk) is fetched when it appears, and all of them on "reload now".
+  const dirTreesFetched = useRef<Set<string> | null>(null);
+  const dirTreesRefreshKey = useRef(refreshKey);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey is the parent's explicit "reload now" trigger; initialTrees/initialRootErrors are stable server props
+  useEffect(() => {
+    dirTreesFetched.current ??= new Set(
+      dirShortcuts.filter((dir) => dir in initialTrees || dir in initialRootErrors),
+    );
+    const fetched = dirTreesFetched.current;
+    const reloadAll = dirTreesRefreshKey.current !== refreshKey;
+    dirTreesRefreshKey.current = refreshKey;
+    for (const dir of dirShortcuts) {
+      if (fetched.has(dir) && !reloadAll) continue;
+      fetched.add(dir);
+      reloadTree(dir);
+    }
+    // A folder taken off the list is fetched afresh if it comes back.
+    for (const dir of fetched) if (!dirShortcuts.includes(dir)) fetched.delete(dir);
+  }, [dirShortcuts, reloadTree, refreshKey]);
+
+  // Every tree that lists any of `paths` — a root's, or a listed folder's (the
+  // same folder can be in both) — for reloading after something changed there.
+  const treesShowing = useCallback(
+    (paths: string[]) =>
+      [...new Set([...roots.map((r) => r.path), ...dirShortcuts])].filter((top) =>
+        paths.some((p) => p === top || p.startsWith(`${top}/`)),
+      ),
+    [roots, dirShortcuts],
+  );
+
   // Live tree updates via SSE: refresh affected root when external add/unlink happens
   useEffect(() => {
-    if (visibleRoots.length === 0) return;
+    // Only trees on screen; hidden roots reload when switched to.
+    const watched = [...visibleRoots.map((r) => r.path), ...dirShortcuts];
+    if (watched.length === 0) return;
     const es = new EventSource("/api/watch");
     const pending = new Set<string>();
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -624,7 +752,7 @@ export function Sidebar({
       for (const r of targets) reloadTree(r);
     };
     es.onmessage = (ev) => {
-      let data: { event?: string; root?: string };
+      let data: { event?: string; root?: string; path?: string };
       try {
         data = JSON.parse(ev.data);
       } catch {
@@ -637,11 +765,11 @@ export function Sidebar({
         data.event !== "unlinkDir"
       )
         return;
-      if (data.root) {
-        // Only refresh roots currently shown; hidden ones reload on switch.
-        if (visibleRoots.some((r) => r.path === data.root)) pending.add(data.root);
-      } else {
-        for (const r of visibleRoots) pending.add(r.path);
+      // Every watched tree that lists the changed path (a folder can be both
+      // under a root and listed as a shortcut); all of them without a path.
+      const changed = data.path;
+      for (const top of watched) {
+        if (!changed || changed === top || changed.startsWith(`${top}/`)) pending.add(top);
       }
       if (!timer) timer = setTimeout(flush, 200);
       // Also refresh shortcuts in case a shortcut target was moved/deleted
@@ -652,7 +780,7 @@ export function Sidebar({
       if (timer) clearTimeout(timer);
       es.close();
     };
-  }, [visibleRoots, reloadTree, fetchShortcuts]);
+  }, [visibleRoots, dirShortcuts, reloadTree, fetchShortcuts]);
 
   const handleAddRoot = useCallback(
     async (label: string, path: string) => {
@@ -686,11 +814,12 @@ export function Sidebar({
     [roots, activeRoot, selectWorkspace],
   );
 
+  // A path names a file, or a folder on disk to list with what is inside it.
   const handleAddShortcut = useCallback(async (rawPath: string, parentId: string | null) => {
     const res = await fetch("/api/shortcuts", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ kind: "file", path: rawPath, parentId }),
+      body: JSON.stringify({ path: rawPath, parentId }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -699,6 +828,29 @@ export function Sidebar({
     setShortcutTree(data.shortcuts ?? []);
     setAddFormFor(null);
     return null;
+  }, []);
+
+  // "ショートカットに追加" on a tree row: the file or folder goes at the end of
+  // the list, and the list scrolls to it.
+  const addShortcutFromTree = useCallback(async (path: string) => {
+    setContextMenu(null);
+    try {
+      const res = await fetch("/api/shortcuts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path, parentId: null }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      setShortcutTree(data.shortcuts ?? []);
+      setShortcutsCollapsed(false);
+      setReveal({ path });
+    } catch (e) {
+      toast.error(String(e));
+    }
   }, []);
 
   const handleAddFolder = useCallback(async (name: string, parentId: string | null) => {
@@ -717,10 +869,12 @@ export function Sidebar({
   }, []);
 
   const handleRemoveShortcut = useCallback(
-    async (shortcutPath: string) => {
+    async (shortcutPath: string, isDir = false) => {
       const ok = await confirmDialog({
         title: "ショートカットを削除",
-        description: "ディスク上のファイルは削除されません。",
+        description: isDir
+          ? "ディスク上のフォルダとファイルは削除されません。"
+          : "ディスク上のファイルは削除されません。",
         confirmLabel: "削除",
         destructive: true,
       });
@@ -733,11 +887,26 @@ export function Sidebar({
         toast.error(data.error ?? "削除に失敗しました");
         return;
       }
-      setShortcutTree(data.shortcuts ?? []);
-      // If the removed shortcut is what the main content is showing, clear it.
-      if (selectedPath === shortcutPath) onSelect(null);
+      const next: ShortcutNode[] = data.shortcuts ?? [];
+      setShortcutTree(next);
+      if (isDir) {
+        // The open/closed entry of its row goes with it.
+        const key = dirShortcutFoldKey(shortcutPath);
+        setCollapsedFolders((prev) => {
+          if (!(key in prev)) return prev;
+          const { [key]: _removed, ...rest } = prev;
+          return rest;
+        });
+      }
+      // If the removed shortcut is what the main content is showing — or the
+      // folder that was the only way to reach it — clear it.
+      if (
+        selectedPath &&
+        (selectedPath === shortcutPath || (isDir && !isReachable(selectedPath, roots, next)))
+      )
+        onSelect(null);
     },
-    [selectedPath, onSelect],
+    [selectedPath, onSelect, roots],
   );
 
   const handleRemoveFolder = useCallback(
@@ -762,11 +931,17 @@ export function Sidebar({
         toast.error(data.error ?? "削除に失敗しました");
         return;
       }
-      setShortcutTree(data.shortcuts ?? []);
-      // If the main content shows a file inside the removed folder, clear it.
-      if (selectedPath && removedPaths.includes(selectedPath)) onSelect(null);
+      const next: ShortcutNode[] = data.shortcuts ?? [];
+      setShortcutTree(next);
+      // If the main content shows a file inside the removed folder — or one
+      // only a folder on disk listed in it reached — clear it.
+      if (
+        selectedPath &&
+        (removedPaths.includes(selectedPath) || !isReachable(selectedPath, roots, next))
+      )
+        onSelect(null);
     },
-    [shortcutTree, selectedPath, onSelect],
+    [shortcutTree, selectedPath, onSelect, roots],
   );
 
   const openAddForm = useCallback((parentId: string | null, kind: "file" | "folder") => {
@@ -778,10 +953,15 @@ export function Sidebar({
   }, []);
 
   // The draft row is rendered among the directory's children, so the directory
-  // has to be open for it to be visible.
-  const startNewNode = useCallback((dirPath: string, kind: NewNodeKind) => {
-    setCollapsedDirs((prev) => (prev[dirPath] === false ? prev : { ...prev, [dirPath]: false }));
-    setNewNodeDraft({ dir: dirPath, kind });
+  // has to be open for it to be visible — for a folder listed as a shortcut,
+  // asked from its own row, that is the row's own fold.
+  const startNewNode = useCallback((dirPath: string, kind: NewNodeKind, tree: string) => {
+    if (tree === dirShortcutFoldKey(dirPath)) {
+      setCollapsedFolders((prev) => (prev[tree] ? { ...prev, [tree]: false } : prev));
+    } else {
+      setCollapsedDirs((prev) => (prev[dirPath] === false ? prev : { ...prev, [dirPath]: false }));
+    }
+    setNewNodeDraft({ dir: dirPath, kind, tree });
   }, []);
 
   const cancelNewNode = useCallback(() => setNewNodeDraft(null), []);
@@ -816,8 +996,7 @@ export function Sidebar({
         setNewNodeDraft((prev) =>
           prev && prev.dir === dirPath && prev.kind === kind ? null : prev,
         );
-        const rootPath = enclosingRootPath(roots, dirPath);
-        if (rootPath) await reloadTree(rootPath);
+        await Promise.all(treesShowing([dirPath]).map((t) => reloadTree(t)));
         // A new file opens in the editor; a new folder can't, so it is just
         // expanded (ready for the next thing put in it) and scrolled to.
         if (isFile) onSelect(data.path);
@@ -828,16 +1007,17 @@ export function Sidebar({
         return String(e);
       }
     },
-    [roots, reloadTree, onSelect],
+    [treesShowing, reloadTree, onSelect],
   );
 
-  const [renamingPath, setRenamingPath] = useState<string | null>(null);
-  const startTreeRename = useCallback((path: string) => {
+  // The row being renamed, and the tree it is in (see treeApis).
+  const [renaming, setRenaming] = useState<{ path: string; tree: string } | null>(null);
+  const startTreeRename = useCallback((path: string, tree: string) => {
     setContextMenu(null);
     setNewNodeDraft(null);
-    setRenamingPath(path);
+    setRenaming({ path, tree });
   }, []);
-  const cancelTreeRename = useCallback(() => setRenamingPath(null), []);
+  const cancelTreeRename = useCallback(() => setRenaming(null), []);
 
   const submitTreeRename = useCallback(
     async (targetPath: string, kind: NewNodeKind, rawName: string): Promise<string | null> => {
@@ -847,7 +1027,7 @@ export function Sidebar({
       if (name.includes("/") || name.includes("\\") || name.includes(".."))
         return "名前に / \\ .. は使えません";
       if (name === currentName) {
-        setRenamingPath(null);
+        setRenaming(null);
         return null;
       }
       try {
@@ -861,14 +1041,14 @@ export function Sidebar({
           if (res.status === 409) return "同じ名前のファイル／フォルダがすでにあります";
           return data.error ?? `HTTP ${res.status}`;
         }
-        setRenamingPath((prev) => (prev === targetPath ? null : prev));
-        const rootPath = enclosingRootPath(roots, targetPath);
-        if (rootPath) await reloadTree(rootPath);
+        setRenaming((prev) => (prev?.path === targetPath ? null : prev));
+        await Promise.all(treesShowing([targetPath]).map((t) => reloadTree(t)));
         // Carry over what the sidebar tracked by path: the open file (kept as
         // an unsaved buffer if it was dirty) and the folder's collapse layout.
         onRenamed?.(targetPath, data.path);
         if (kind === "folder") {
           setCollapsedDirs((prev) => repathCollapsedDirs(prev, targetPath, data.path));
+          setCollapsedFolders((prev) => repathDirShortcutFolds(prev, targetPath, data.path));
         }
         // Shortcuts pointing at the renamed path are repathed server-side.
         await fetchShortcuts();
@@ -878,12 +1058,18 @@ export function Sidebar({
         return String(e);
       }
     },
-    [roots, reloadTree, fetchShortcuts, onRenamed],
+    [treesShowing, reloadTree, fetchShortcuts, onRenamed],
   );
 
   // Search runs over what is already loaded — the fetched trees plus the
-  // shortcut list — so a lookup never hits the disk or the network.
-  const searchIndex = useMemo(() => buildSearchIndex(trees, shortcutTree), [trees, shortcutTree]);
+  // shortcut list — so a lookup never hits the disk or the network. The roots'
+  // trees go in as trees; a listed folder's tree is reached through its
+  // shortcut.
+  const searchIndex = useMemo(() => {
+    const rootTrees: Record<string, TreeEntry[]> = {};
+    for (const root of roots) if (trees[root.path]) rootTrees[root.path] = trees[root.path];
+    return buildSearchIndex(rootTrees, shortcutTree, trees);
+  }, [roots, trees, shortcutTree]);
 
   // Marks are paths; drop the ones that stopped existing (moved, renamed or
   // deleted elsewhere) so a later drag can't act on them.
@@ -920,17 +1106,17 @@ export function Sidebar({
         const errors: { path: string; error: string; status: number }[] = data.errors ?? [];
         // Source and destination can sit under different roots (the ALL view
         // shows several), so every affected tree is refreshed.
-        const affected = [
-          ...moved.map((m) => enclosingRootPath(roots, m.from)),
-          enclosingRootPath(roots, targetDir),
-        ].filter((r, i, all): r is string => r !== null && all.indexOf(r) === i);
-        await Promise.all(affected.map((r) => reloadTree(r)));
+        const affected = treesShowing([...moved.map((m) => m.from), targetDir]);
+        await Promise.all(affected.map((t) => reloadTree(t)));
         // The destination opens; moved folders keep their own layout.
         setCollapsedDirs((prev) =>
           moved.reduce((dirs, m) => repathCollapsedDirs(dirs, m.from, m.to), {
             ...prev,
             [targetDir]: false,
           }),
+        );
+        setCollapsedFolders((prev) =>
+          moved.reduce((folders, m) => repathDirShortcutFolds(folders, m.from, m.to), prev),
         );
         for (const m of moved) onRenamed?.(m.from, m.to);
         setMarked([]);
@@ -948,7 +1134,7 @@ export function Sidebar({
         toast.error(String(e));
       }
     },
-    [roots, reloadTree, fetchShortcuts, onRenamed],
+    [treesShowing, reloadTree, fetchShortcuts, onRenamed],
   );
 
   // Pending hover-expand: at most one folder is ever scheduled, and it is
@@ -1009,8 +1195,7 @@ export function Sidebar({
         }
         const imported: string[] = data.imported ?? [];
         const errors: { name: string; error: string }[] = data.errors ?? [];
-        const rootPath = enclosingRootPath(roots, targetDir);
-        if (rootPath) await reloadTree(rootPath);
+        await Promise.all(treesShowing([targetDir]).map((t) => reloadTree(t)));
         if (imported.length > 0) {
           setCollapsedDirs((prev) => ({ ...prev, [targetDir]: false }));
           setReveal({ path: imported[imported.length - 1] });
@@ -1021,7 +1206,7 @@ export function Sidebar({
         toast.error(String(e));
       }
     },
-    [roots, reloadTree],
+    [treesShowing, reloadTree],
   );
 
   const acceptTreeDrag = (e: React.DragEvent, targetDir: string) => {
@@ -1111,9 +1296,25 @@ export function Sidebar({
     },
   };
 
-  // Rows in screen order, for Shift-click ranges.
+  // Rows in screen order, for Shift-click ranges: the open folders listed in
+  // Shortcuts (above), then the roots' trees.
   const visibleRowPaths = useMemo(() => {
     const out: string[] = [];
+    const walkShortcuts = (nodes: ShortcutNode[]) => {
+      for (const n of nodes) {
+        if (n.type === "folder") {
+          if (!collapsedFolders[n.id]) walkShortcuts(n.children);
+        } else if (n.type === "dir" && !collapsedFolders[dirShortcutFoldKey(n.path)]) {
+          flattenVisibleRows(
+            trees[n.path] ?? [],
+            collapsedDirs,
+            closedByDefault(dirDefaultClosed, n.path),
+            out,
+          );
+        }
+      }
+    };
+    if (!shortcutsCollapsed) walkShortcuts(shortcutTree);
     for (const root of visibleRoots) {
       flattenVisibleRows(
         trees[root.path] ?? [],
@@ -1123,7 +1324,15 @@ export function Sidebar({
       );
     }
     return out;
-  }, [visibleRoots, trees, collapsedDirs, dirDefaultClosed]);
+  }, [
+    visibleRoots,
+    trees,
+    collapsedDirs,
+    dirDefaultClosed,
+    shortcutTree,
+    shortcutsCollapsed,
+    collapsedFolders,
+  ]);
 
   const onRowClick = useCallback(
     (e: React.MouseEvent, entry: TreeDragSource): boolean => {
@@ -1202,11 +1411,8 @@ export function Sidebar({
         }
         const trashed: { path: string }[] = data.results ?? [];
         const errors: { path: string; error: string; code?: string }[] = data.errors ?? [];
-        const affected = [
-          ...trashed.map((t) => enclosingRootPath(roots, t.path)),
-          enclosingRootPath(roots, rowPath),
-        ].filter((r, i, all): r is string => r !== null && all.indexOf(r) === i);
-        await Promise.all(affected.map((r) => reloadTree(r)));
+        const affected = treesShowing([...trashed.map((t) => t.path), rowPath]);
+        await Promise.all(affected.map((t) => reloadTree(t)));
         await fetchShortcuts();
         setMarked([]);
         // The editor can't stay on something that is gone.
@@ -1237,7 +1443,7 @@ export function Sidebar({
         toast.error(String(e));
       }
     },
-    [roots, reloadTree, fetchShortcuts, selectedPath, onSelect, trashTargetsFor],
+    [treesShowing, reloadTree, fetchShortcuts, selectedPath, onSelect, trashTargetsFor],
   );
 
   const handleSubmitAlias = useCallback(async (path: string, alias: string) => {
@@ -1339,6 +1545,7 @@ export function Sidebar({
       // while this page held an older copy of the list. The user asked for the
       // row to go away, and it has; re-read the list so it disappears instead
       // of erroring on every click.
+      let nextRoots: AllowedRoot[];
       if (res.status === 404) {
         const fresh = await fetch("/api/roots")
           .then((r) => (r.ok ? r.json() : null))
@@ -1347,21 +1554,25 @@ export function Sidebar({
           toast.error(data.error ?? "削除に失敗しました");
           return;
         }
-        setRoots(fresh.roots);
+        nextRoots = fresh.roots;
       } else if (!res.ok) {
         toast.error(data.error ?? "削除に失敗しました");
         return;
       } else {
-        setRoots(data.roots ?? []);
+        nextRoots = data.roots ?? [];
       }
-      setTrees((prev) => {
-        const { [rootPath]: _, ...rest } = prev;
-        return rest;
-      });
-      setRootErrors((prev) => {
-        const { [rootPath]: _, ...rest } = prev;
-        return rest;
-      });
+      setRoots(nextRoots);
+      // The same folder listed as a shortcut keeps showing its tree there.
+      if (!dirShortcuts.includes(rootPath)) {
+        setTrees((prev) => {
+          const { [rootPath]: _, ...rest } = prev;
+          return rest;
+        });
+        setRootErrors((prev) => {
+          const { [rootPath]: _, ...rest } = prev;
+          return rest;
+        });
+      }
       // Drop the removed root's collapse bookkeeping so stale paths don't
       // accumulate in the saved state.
       setDirDefaultClosed((prev) => prev.filter((p) => p !== rootPath));
@@ -1372,13 +1583,18 @@ export function Sidebar({
         }
         return next;
       });
-      // If the main content shows a file under the removed root, clear it.
-      if (selectedPath && (selectedPath === rootPath || selectedPath.startsWith(`${rootPath}/`)))
+      // If the main content shows a file under the removed root that nothing
+      // else reaches (a shortcut, or a folder listed as one), clear it.
+      if (
+        selectedPath &&
+        (selectedPath === rootPath || selectedPath.startsWith(`${rootPath}/`)) &&
+        !isReachable(selectedPath, nextRoots, shortcutTree)
+      )
         onSelect(null);
       // If the removed root was the active workspace, fall back to all roots.
       if (activeRoot?.path === rootPath) selectWorkspace(null);
     },
-    [selectedPath, onSelect, activeRoot, selectWorkspace],
+    [selectedPath, onSelect, activeRoot, selectWorkspace, dirShortcuts, shortcutTree],
   );
 
   const openSearchHit = useCallback(
@@ -1397,12 +1613,31 @@ export function Sidebar({
         }
       }
       const folderChain = shortcutFolderChain(shortcutTree, hit.path);
+      // Found only inside a folder listed as a shortcut: its row opens, and
+      // the folders between it and the hit.
+      const inDir = !folderChain && !hit.rootPath ? shortcutDirChain(shortcutTree, hit.path) : null;
       if (folderChain) {
         setShortcutsCollapsed(false);
         if (folderChain.length > 0) {
           setCollapsedFolders((prev) => {
             const next = { ...prev };
             for (const id of folderChain) next[id] = false;
+            return next;
+          });
+        }
+      } else if (inDir) {
+        setShortcutsCollapsed(false);
+        setCollapsedFolders((prev) => {
+          const next = { ...prev };
+          for (const id of [...inDir.chain, dirShortcutFoldKey(inDir.dir)]) next[id] = false;
+          return next;
+        });
+        const below = ancestorDirPaths(inDir.dir, hit.path);
+        if (hit.type === "directory" && hit.path !== inDir.dir) below.push(hit.path);
+        if (below.length > 0) {
+          setCollapsedDirs((prev) => {
+            const next = { ...prev };
+            for (const dir of below) next[dir] = false;
             return next;
           });
         }
@@ -1459,7 +1694,50 @@ export function Sidebar({
     };
   }, []);
 
+  // Paths already listed as shortcuts: a tree row's context menu offers
+  // "ショートカットに追加" for the rest.
+  const listedPaths = useMemo(
+    () => new Set([...collectFilePaths(shortcutTree), ...collectDirPaths(shortcutTree)]),
+    [shortcutTree],
+  );
+
   if (error) return <div className="p-5 text-sm text-[var(--danger)]">{error}</div>;
+
+  // The context menu, new-file/folder row and rename field of one tree. The
+  // same folder can show in a root's tree and under a shortcut; binding them
+  // to the tree keeps a field from opening in both places.
+  const treeApis = (tree: string): TreeApis => ({
+    onContextMenu: (x, y, path, nodeType) => openContextMenu(x, y, path, nodeType, tree),
+    newNode: {
+      draft: newNodeDraft?.tree === tree ? newNodeDraft : null,
+      onStart: (dirPath, kind) => startNewNode(dirPath, kind, tree),
+      onSubmit: submitNewNode,
+      onCancel: cancelNewNode,
+    },
+    rename: {
+      path: renaming?.tree === tree ? renaming.path : null,
+      onSubmit: submitTreeRename,
+      onCancel: cancelTreeRename,
+    },
+  });
+
+  const dirShortcutView: DirShortcutView = {
+    trees,
+    errors: rootErrors,
+    truncated: treeTruncated,
+    isOpen: (path) => !collapsedFolders[dirShortcutFoldKey(path)],
+    onToggle: (path) => toggleFolder(dirShortcutFoldKey(path)),
+    onOpen: (path) => {
+      const key = dirShortcutFoldKey(path);
+      setCollapsedFolders((prev) => (prev[key] ? { ...prev, [key]: false } : prev));
+    },
+    dirsDefaultCollapsed: (path) => closedByDefault(dirDefaultClosed, path),
+    collapsedDirs,
+    onToggleDir: toggleDir,
+    treeApis: (path) => treeApis(dirShortcutFoldKey(path)),
+    dnd: treeDnd,
+    marks: treeMarks,
+  };
 
   const isEmpty = roots.length === 0;
 
@@ -1526,7 +1804,7 @@ export function Sidebar({
                 )}
                 {shortcutTree.length === 0 && addFormFor === null && (
                   <div className="px-4 py-1.5 text-[11px] text-[var(--text-subtle)] leading-relaxed">
-                    Add absolute paths to reach files anywhere.
+                    Add absolute paths to reach files and folders anywhere.
                   </div>
                 )}
                 <ShortcutTreeView
@@ -1536,7 +1814,7 @@ export function Sidebar({
                   onSelect={onSelect}
                   onContextMenu={openShortcutContextMenu}
                   onFolderContextMenu={openFolderContextMenu}
-                  onRemoveFile={handleRemoveShortcut}
+                  onRemoveShortcut={handleRemoveShortcut}
                   onRemoveFolder={handleRemoveFolder}
                   collapsedFolders={collapsedFolders}
                   onToggleFolder={toggleFolder}
@@ -1551,6 +1829,7 @@ export function Sidebar({
                     onSubmit: handleSubmitAlias,
                     onCancel: cancelRenameAlias,
                   }}
+                  dirs={dirShortcutView}
                 />
               </>
             )}
@@ -1629,24 +1908,13 @@ export function Sidebar({
                       entries={trees[root.path] ?? []}
                       selectedPath={selectedPath}
                       onSelect={onSelect}
-                      onContextMenu={openContextMenu}
                       // Root header rows are gone (the workspace switcher
                       // replaces them), so entries start at the base level.
                       depth={0}
                       collapsedDirs={collapsedDirs}
                       onToggleDir={toggleDir}
                       dirsDefaultCollapsed={dirDefaultClosed.includes(root.path)}
-                      newNode={{
-                        draft: newNodeDraft,
-                        onStart: startNewNode,
-                        onSubmit: submitNewNode,
-                        onCancel: cancelNewNode,
-                      }}
-                      rename={{
-                        path: renamingPath,
-                        onSubmit: submitTreeRename,
-                        onCancel: cancelTreeRename,
-                      }}
+                      {...treeApis(root.path)}
                       dnd={treeDnd}
                       marks={treeMarks}
                     />
@@ -1700,7 +1968,8 @@ export function Sidebar({
           nodeType={contextMenu.nodeType}
           onClose={closeContextMenu}
           onStartRename={startRenameAlias}
-          onStartTreeRename={startTreeRename}
+          onStartTreeRename={(path) => startTreeRename(path, contextMenu.tree ?? "")}
+          onAddShortcut={listedPaths.has(contextMenu.path) ? undefined : addShortcutFromTree}
           onTrash={trashTreeNodes}
           trashCount={
             contextMenu.nodeType
@@ -2607,6 +2876,27 @@ function FolderIcon({ open }: { open: boolean }) {
   );
 }
 
+// A folder on disk listed as a shortcut: the closed folder with an arrow in
+// it, so it reads apart from the named groups of shortcuts (FolderIcon).
+function LinkedFolderIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M1.6 4.2c0-.55.45-1 1-1h3.4l1.4 1.6h6c.55 0 1 .45 1 1v6.4c0 .55-.45 1-1 1H2.6c-.55 0-1-.45-1-1V4.2z" />
+      <path d="M5.4 9.5h4.6M8.4 7.8l1.7 1.7-1.7 1.7" />
+    </svg>
+  );
+}
+
 function ChevronIcon() {
   return (
     <svg viewBox="0 0 10 10" className="tree-dir-chevron-svg" aria-hidden="true">
@@ -3347,7 +3637,7 @@ function ShortcutTreeView({
   onSelect,
   onContextMenu,
   onFolderContextMenu,
-  onRemoveFile,
+  onRemoveShortcut,
   onRemoveFolder,
   collapsedFolders,
   onToggleFolder,
@@ -3358,6 +3648,7 @@ function ShortcutTreeView({
   onSubmitFolder,
   dnd,
   rename,
+  dirs,
 }: {
   nodes: ShortcutNode[];
   depth: number;
@@ -3365,7 +3656,7 @@ function ShortcutTreeView({
   onSelect: (path: string) => void;
   onContextMenu: ShortcutContextMenuOpener;
   onFolderContextMenu: FolderContextMenuOpener;
-  onRemoveFile: (path: string) => void;
+  onRemoveShortcut: (path: string, isDir?: boolean) => void;
   onRemoveFolder: (id: string, name: string, hasChildren: boolean) => void;
   collapsedFolders: Record<string, boolean>;
   onToggleFolder: (id: string) => void;
@@ -3376,23 +3667,43 @@ function ShortcutTreeView({
   onSubmitFolder: (name: string, parentId: string | null) => Promise<string | null>;
   dnd: DnD;
   rename: RenameAPI;
+  dirs: DirShortcutView;
 }) {
   return (
     <>
-      {nodes.map((node) =>
-        node.type === "file" ? (
-          <ShortcutItem
-            key={`f:${node.path}`}
-            file={node}
-            depth={depth}
-            isSelected={selectedPath === node.path}
-            onSelect={onSelect}
-            onContextMenu={onContextMenu}
-            onRemove={onRemoveFile}
-            dnd={dnd}
-            rename={rename}
-          />
-        ) : (
+      {nodes.map((node) => {
+        if (node.type === "file") {
+          return (
+            <ShortcutItem
+              key={`f:${node.path}`}
+              file={node}
+              depth={depth}
+              isSelected={selectedPath === node.path}
+              onSelect={onSelect}
+              onContextMenu={onContextMenu}
+              onRemove={onRemoveShortcut}
+              dnd={dnd}
+              rename={rename}
+            />
+          );
+        }
+        if (node.type === "dir") {
+          return (
+            <ShortcutDirItem
+              key={`r:${node.path}`}
+              dir={node}
+              depth={depth}
+              selectedPath={selectedPath}
+              onSelect={onSelect}
+              onContextMenu={onContextMenu}
+              onRemove={(path) => onRemoveShortcut(path, true)}
+              dnd={dnd}
+              rename={rename}
+              view={dirs}
+            />
+          );
+        }
+        return (
           <ShortcutFolderItem
             key={`d:${node.id}`}
             folder={node}
@@ -3401,7 +3712,7 @@ function ShortcutTreeView({
             onSelect={onSelect}
             onContextMenu={onContextMenu}
             onFolderContextMenu={onFolderContextMenu}
-            onRemoveFile={onRemoveFile}
+            onRemoveShortcut={onRemoveShortcut}
             onRemoveFolder={onRemoveFolder}
             collapsedFolders={collapsedFolders}
             onToggleFolder={onToggleFolder}
@@ -3412,9 +3723,10 @@ function ShortcutTreeView({
             onSubmitFolder={onSubmitFolder}
             dnd={dnd}
             rename={rename}
+            dirs={dirs}
           />
-        ),
-      )}
+        );
+      })}
     </>
   );
 }
@@ -3426,7 +3738,7 @@ function ShortcutFolderItem({
   onSelect,
   onContextMenu,
   onFolderContextMenu,
-  onRemoveFile,
+  onRemoveShortcut,
   onRemoveFolder,
   collapsedFolders,
   onToggleFolder,
@@ -3437,6 +3749,7 @@ function ShortcutFolderItem({
   onSubmitFolder,
   dnd,
   rename,
+  dirs,
 }: {
   folder: ShortcutFolderNode;
   depth: number;
@@ -3444,7 +3757,7 @@ function ShortcutFolderItem({
   onSelect: (path: string) => void;
   onContextMenu: ShortcutContextMenuOpener;
   onFolderContextMenu: FolderContextMenuOpener;
-  onRemoveFile: (path: string) => void;
+  onRemoveShortcut: (path: string, isDir?: boolean) => void;
   onRemoveFolder: (id: string, name: string, hasChildren: boolean) => void;
   collapsedFolders: Record<string, boolean>;
   onToggleFolder: (id: string) => void;
@@ -3455,6 +3768,7 @@ function ShortcutFolderItem({
   onSubmitFolder: (name: string, parentId: string | null) => Promise<string | null>;
   dnd: DnD;
   rename: RenameAPI;
+  dirs: DirShortcutView;
 }) {
   const open = !collapsedFolders[folder.id];
   const showForm = addFormFor?.parentId === folder.id;
@@ -3552,7 +3866,7 @@ function ShortcutFolderItem({
             onSelect={onSelect}
             onContextMenu={onContextMenu}
             onFolderContextMenu={onFolderContextMenu}
-            onRemoveFile={onRemoveFile}
+            onRemoveShortcut={onRemoveShortcut}
             onRemoveFolder={onRemoveFolder}
             collapsedFolders={collapsedFolders}
             onToggleFolder={onToggleFolder}
@@ -3563,7 +3877,193 @@ function ShortcutFolderItem({
             onSubmitFolder={onSubmitFolder}
             dnd={dnd}
             rename={rename}
+            dirs={dirs}
           />
+        </>
+      )}
+    </div>
+  );
+}
+
+// A folder on disk listed as a shortcut: a folder row, and under it the
+// folder's tree — the rows a root's tree has, with the same actions. The row
+// keeps its own open/closed state (dirShortcutFoldKey). Tree rows and files
+// from Finder can be dropped on it, as on a folder row in the tree; a dragged
+// shortcut passes through to the list.
+function ShortcutDirItem({
+  dir,
+  depth,
+  selectedPath,
+  onSelect,
+  onContextMenu,
+  onRemove,
+  dnd,
+  rename,
+  view,
+}: {
+  dir: ShortcutDirNode;
+  depth: number;
+  selectedPath: string | null;
+  onSelect: (path: string) => void;
+  onContextMenu: ShortcutContextMenuOpener;
+  onRemove: (path: string) => void;
+  dnd: DnD;
+  rename: RenameAPI;
+  view: DirShortcutView;
+}) {
+  const name = dir.path.split("/").pop() || dir.path;
+  const display = dir.alias ?? name;
+  const missing = dir.exists === false;
+  const open = view.isOpen(dir.path);
+  const apis = view.treeApis(dir.path);
+  const draft = apis.newNode.draft?.dir === dir.path ? apis.newNode.draft : null;
+  const entries = view.trees[dir.path];
+  const loadError = view.errors[dir.path];
+  const isDragging = dnd.source?.kind === "dir" && dnd.source.path === dir.path;
+  const isDropTarget = view.dnd.overDir === dir.path;
+  const takesDrag = (e: React.DragEvent) =>
+    !missing &&
+    (e.dataTransfer.types.includes(TREE_DRAG_MIME) || e.dataTransfer.types.includes("Files"));
+  return (
+    <div>
+      <div
+        className={`tree-row group/shortcut rounded-md transition-colors ${
+          isDropTarget ? "bg-[color-mix(in_srgb,var(--primary)_14%,transparent)]" : ""
+        } ${isDragging ? "opacity-50" : ""}`}
+        style={{ paddingLeft: `${depth * 12}px` }}
+        data-reveal-path={dir.path}
+        onDragEnter={(e) => {
+          if (!takesDrag(e)) return;
+          e.stopPropagation();
+          view.dnd.onDragEnter(e, dir.path);
+        }}
+        onDragOver={(e) => {
+          if (!takesDrag(e)) return;
+          e.stopPropagation();
+          view.dnd.onDragOver(e, dir.path);
+        }}
+        onDragLeave={(e) => {
+          if (!takesDrag(e)) return;
+          e.stopPropagation();
+          view.dnd.onDragLeave(dir.path);
+        }}
+        onDrop={(e) => {
+          if (!takesDrag(e)) return;
+          // What lands here should show where it landed.
+          view.onOpen(dir.path);
+          view.dnd.onDrop(e, dir.path);
+        }}
+      >
+        {rename.editingPath === dir.path ? (
+          <AliasRenameInput
+            initial={display}
+            placeholder={name}
+            originalFilename={name}
+            isFolder
+            depth={0}
+            onSubmit={(value) => rename.onSubmit(dir.path, value)}
+            onCancel={rename.onCancel}
+          />
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => view.onToggle(dir.path)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onContextMenu(e.clientX, e.clientY, dir.path, dir.alias, "directory");
+              }}
+              draggable
+              onDragStart={(e) => dnd.onDragStart(e, { kind: "dir", path: dir.path })}
+              onDragEnd={dnd.onDragEnd}
+              className={`tree-dir ${missing ? "is-missing" : ""}`}
+              style={{ paddingRight: "96px" }}
+              aria-expanded={open}
+            >
+              <span className={`tree-dir-chevron ${open ? "is-open" : ""}`}>
+                <ChevronIcon />
+              </span>
+              <span className="file-icon flex-shrink-0" aria-hidden="true">
+                {missing ? <MissingIcon /> : <LinkedFolderIcon />}
+              </span>
+              <span className="tree-name truncate">{display}</span>
+            </button>
+            <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover/shortcut:opacity-100 focus-within:opacity-100">
+              {!missing && (
+                <>
+                  <NewNodeButton
+                    kind="file"
+                    onClick={() => apis.newNode.onStart(dir.path, "file")}
+                  />
+                  <NewNodeButton
+                    kind="folder"
+                    onClick={() => apis.newNode.onStart(dir.path, "folder")}
+                  />
+                </>
+              )}
+              <CopyPathButton path={dir.path} />
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRemove(dir.path);
+                }}
+                title="Remove shortcut"
+                aria-label="Remove shortcut"
+                className="inline-flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+      {open && !missing && (
+        <>
+          {draft && (
+            <TreeNameInput
+              // Remounting per kind resets the field when switching file↔folder.
+              key={draft.kind}
+              kind={draft.kind}
+              depth={depth + 1}
+              onSubmit={(value) => apis.newNode.onSubmit(dir.path, draft.kind, value)}
+              onCancel={apis.newNode.onCancel}
+            />
+          )}
+          {loadError ? (
+            <div
+              className="mr-2 my-1 px-3 py-2 text-[11px] text-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] rounded-md"
+              style={{ marginLeft: `${(depth + 1) * 12 + 8}px` }}
+            >
+              {loadError}
+            </div>
+          ) : entries === undefined ? (
+            <TreeSkeleton />
+          ) : (
+            <>
+              <TreeView
+                entries={entries}
+                selectedPath={selectedPath}
+                onSelect={onSelect}
+                depth={depth + 1}
+                collapsedDirs={view.collapsedDirs}
+                onToggleDir={view.onToggleDir}
+                dirsDefaultCollapsed={view.dirsDefaultCollapsed(dir.path)}
+                {...apis}
+                dnd={view.dnd}
+                marks={view.marks}
+              />
+              {view.truncated[dir.path] && (
+                <div
+                  className="mr-2 mt-1 px-3 py-2 text-[10.5px] text-[color-mix(in_srgb,var(--warning)_55%,var(--text-subtle))] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] rounded-md"
+                  style={{ marginLeft: `${(depth + 1) * 12 + 8}px` }}
+                >
+                  項目数が多いため、深い階層の一部は表示されていません
+                </div>
+              )}
+            </>
+          )}
         </>
       )}
     </div>
@@ -3663,6 +4163,7 @@ function AliasRenameInput({
   initial,
   placeholder,
   originalFilename,
+  isFolder = false,
   depth,
   onSubmit,
   onCancel,
@@ -3670,6 +4171,7 @@ function AliasRenameInput({
   initial: string;
   placeholder: string;
   originalFilename: string;
+  isFolder?: boolean;
   depth: number;
   onSubmit: (value: string) => void;
   onCancel: () => void;
@@ -3693,7 +4195,7 @@ function AliasRenameInput({
         paddingLeft: `${depth * 12 + 14}px`,
         paddingRight: "8px",
       }}
-      title={`元ファイル: ${originalFilename}`}
+      title={`${isFolder ? "元フォルダ" : "元ファイル"}: ${originalFilename}`}
     >
       <span className="file-icon flex-shrink-0" aria-hidden="true" />
       <input
@@ -3816,7 +4318,7 @@ function AddShortcutForm({
         type="text"
         value={path}
         onChange={(e) => setPath(e.target.value)}
-        placeholder="/absolute/path/to/file.html"
+        placeholder="/absolute/path/to/file.html or folder"
         spellCheck={false}
         autoCapitalize="off"
         autoComplete="off"
@@ -3852,6 +4354,7 @@ function ContextMenu({
   onClose,
   onStartRename,
   onStartTreeRename,
+  onAddShortcut,
   onTrash,
   trashCount,
 }: {
@@ -3866,6 +4369,8 @@ function ContextMenu({
   // folder on disk.
   onStartRename: (path: string) => void;
   onStartTreeRename: (path: string) => void;
+  // Tree rows not yet listed as shortcuts: add the file or folder to the list.
+  onAddShortcut?: (path: string) => void;
   onTrash: (path: string, nodeType: "file" | "directory") => void;
   // How many entries the trash item would act on (the marked set, or 1).
   trashCount: number;
@@ -3900,9 +4405,11 @@ function ContextMenu({
 
   const filename = path.split("/").pop() ?? path;
   const isShortcut = source === "shortcut";
-  // Tree rows: rename / copy path / move to Trash. Shortcut rows: alias / copy.
+  // Tree rows: rename / copy path / add to Shortcuts (when not listed yet) /
+  // move to Trash. Shortcut rows: alias / copy.
   const canEditOnDisk = !isShortcut && nodeType !== undefined;
-  const itemCount = canEditOnDisk ? 3 : isShortcut ? 2 : 1;
+  const canAddShortcut = !isShortcut && onAddShortcut !== undefined;
+  const itemCount = (canEditOnDisk ? 3 : isShortcut ? 2 : 1) + (canAddShortcut ? 1 : 0);
 
   const MENU_W = 200;
   const MENU_H = 36 + itemCount * 30 + (isShortcut ? 16 : 0);
@@ -3930,7 +4437,7 @@ function ContextMenu({
         <div className="px-3 pt-1.5 pb-1.5 mb-1">
           {alias && (
             <div className="text-[10.5px] uppercase tracking-[0.06em] text-[var(--text-subtle)] mb-0.5">
-              元ファイル
+              {nodeType === "directory" ? "元フォルダ" : "元ファイル"}
             </div>
           )}
           <div className="text-[11.5px] font-mono text-[var(--text-muted)] truncate" title={path}>
@@ -3966,6 +4473,16 @@ function ContextMenu({
       >
         パスをコピー
       </button>
+      {canAddShortcut && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => onAddShortcut?.(path)}
+          className="w-full text-left px-3 py-1.5 text-[12px] text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+        >
+          ショートカットに追加
+        </button>
+      )}
       {canEditOnDisk && nodeType && (
         <button
           type="button"

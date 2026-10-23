@@ -15,6 +15,7 @@ export type SearchableTreeEntry = {
 
 export type SearchableShortcut =
   | { type: "file"; path: string; alias?: string }
+  | { type: "dir"; path: string; alias?: string }
   | { type: "folder"; children: SearchableShortcut[] };
 
 export type SearchEntry = {
@@ -35,13 +36,20 @@ export type SearchHit = SearchEntry & { score: number };
 
 export const MAX_SEARCH_RESULTS = 40;
 
+// `dirTrees` holds the trees of folders listed as shortcuts, keyed by the
+// folder's path.
 export function buildSearchIndex(
   trees: Record<string, SearchableTreeEntry[]>,
   shortcuts: SearchableShortcut[],
+  dirTrees: Record<string, SearchableTreeEntry[]> = {},
 ): SearchEntry[] {
   const byPath = new Map<string, SearchEntry>();
 
-  const walk = (entries: SearchableTreeEntry[], rootPath: string) => {
+  const walk = (
+    entries: SearchableTreeEntry[],
+    rootPath: string | null,
+    source: SearchEntry["source"],
+  ) => {
     for (const entry of entries) {
       if (!byPath.has(entry.path)) {
         byPath.set(entry.path, {
@@ -49,16 +57,17 @@ export function buildSearchIndex(
           name: entry.name,
           type: entry.type,
           rootPath,
-          source: "tree",
+          source,
         });
       }
-      if (entry.children) walk(entry.children, rootPath);
+      if (entry.children) walk(entry.children, rootPath, source);
     }
   };
-  for (const [rootPath, entries] of Object.entries(trees)) walk(entries, rootPath);
+  for (const [rootPath, entries] of Object.entries(trees)) walk(entries, rootPath, "tree");
 
   // Shortcuts either annotate an entry already in a tree (with its alias) or
-  // add a path that lives outside every root.
+  // add a path that lives outside every root — for a folder on disk, with
+  // what is inside it.
   const walkShortcuts = (nodes: SearchableShortcut[]) => {
     for (const node of nodes) {
       if (node.type === "folder") {
@@ -68,16 +77,17 @@ export function buildSearchIndex(
       const existing = byPath.get(node.path);
       if (existing) {
         if (node.alias && !existing.alias) existing.alias = node.alias;
-        continue;
+      } else {
+        byPath.set(node.path, {
+          path: node.path,
+          name: node.path.split("/").pop() ?? node.path,
+          type: node.type === "dir" ? "directory" : "file",
+          rootPath: null,
+          alias: node.alias,
+          source: "shortcut",
+        });
       }
-      byPath.set(node.path, {
-        path: node.path,
-        name: node.path.split("/").pop() ?? node.path,
-        type: "file",
-        rootPath: null,
-        alias: node.alias,
-        source: "shortcut",
-      });
+      if (node.type === "dir") walk(dirTrees[node.path] ?? [], null, "shortcut");
     }
   };
   walkShortcuts(shortcuts);

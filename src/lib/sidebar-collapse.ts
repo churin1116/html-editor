@@ -13,7 +13,8 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 export type SidebarCollapse = {
-  // Shortcut folders, keyed by id (true = closed).
+  // Shortcut folders, keyed by id, and the rows of folders on disk listed as
+  // shortcuts, keyed by dirShortcutFoldKey (true = closed).
   folders: Record<string, boolean>;
   // Directories inside a root's file tree, keyed by absolute path. An entry
   // is an explicit user choice (true = closed, false = open); directories
