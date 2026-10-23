@@ -161,6 +161,8 @@ type PatchBody = {
   action?: "move" | "rename" | "setFolderCss";
   source?: MoveSource;
   targetFolderId?: string | null;
+  // move: the node to land in front of (null or absent = at the end).
+  before?: MoveSource | null;
   path?: string;
   alias?: string;
   folderId?: string;
@@ -215,21 +217,26 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ error: "Unsupported action" }, { status: 400 });
   }
   const source = body.source;
-  if (
-    !source ||
-    (source.kind !== "file" && source.kind !== "dir" && source.kind !== "folder") ||
-    (source.kind !== "folder" && !source.path) ||
-    (source.kind === "folder" && !source.id)
-  ) {
+  if (!isMoveRef(source)) {
     return NextResponse.json({ error: "Invalid 'source'" }, { status: 400 });
+  }
+  const before = body.before ?? null;
+  if (before !== null && !isMoveRef(before)) {
+    return NextResponse.json({ error: "Invalid 'before'" }, { status: 400 });
   }
   const targetFolderId = body.targetFolderId ?? null;
 
   const tree = await loadShortcutTree();
-  const { tree: next, ok, reason } = moveNodeInTree(tree, source, targetFolderId);
+  const { tree: next, ok, reason } = moveNodeInTree(tree, source, targetFolderId, before);
   if (!ok) {
     return NextResponse.json({ error: reason ?? "Move failed" }, { status: 400 });
   }
   await saveShortcutTree(next);
   return NextResponse.json({ shortcuts: await loadShortcutTreeWithStatus() });
+}
+
+function isMoveRef(ref: MoveSource | undefined): ref is MoveSource {
+  if (!ref) return false;
+  if (ref.kind === "folder") return Boolean(ref.id);
+  return (ref.kind === "file" || ref.kind === "dir") && Boolean(ref.path);
 }

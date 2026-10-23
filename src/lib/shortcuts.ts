@@ -321,31 +321,40 @@ export function repathInTree(
   return { tree: walk(tree), changed };
 }
 
+// Names one node of the list: a file or a folder on disk by its path, a group
+// by its id.
 export type MoveSource =
   | { kind: "file"; path: string }
   | { kind: "dir"; path: string }
   | { kind: "folder"; id: string };
 
+function isNode(n: ShortcutNode, ref: MoveSource): boolean {
+  if (ref.kind === "folder") return n.type === "folder" && n.id === ref.id;
+  return n.type !== "folder" && n.type === ref.kind && n.path === ref.path;
+}
+
+function sameRef(a: MoveSource, b: MoveSource): boolean {
+  if (a.kind === "folder") return b.kind === "folder" && b.id === a.id;
+  return b.kind !== "folder" && b.kind === a.kind && b.path === a.path;
+}
+
+// Moves `source` into the group `targetFolderId` (null = the top level),
+// just before the node `before` there — at the end when `before` is null or
+// not among them.
 export function moveNodeInTree(
   tree: ShortcutNode[],
   source: MoveSource,
   targetFolderId: string | null,
+  before: MoveSource | null = null,
 ): { tree: ShortcutNode[]; ok: boolean; reason?: string } {
+  // Dropped just in front of itself: nothing moves.
+  if (before && sameRef(before, source)) return { tree, ok: true };
   // 1. Extract the source node
   let extracted: ShortcutNode | null = null;
   const extract = (nodes: ShortcutNode[]): ShortcutNode[] =>
     nodes.flatMap<ShortcutNode>((n) => {
       if (extracted) return [n];
-      if (
-        source.kind !== "folder" &&
-        n.type !== "folder" &&
-        n.type === source.kind &&
-        n.path === source.path
-      ) {
-        extracted = n;
-        return [];
-      }
-      if (source.kind === "folder" && n.type === "folder" && n.id === source.id) {
+      if (isNode(n, source)) {
         extracted = n;
         return [];
       }
@@ -373,18 +382,23 @@ export function moveNodeInTree(
   }
 
   // 3. Insert into target
+  const node: ShortcutNode = extracted;
+  const place = (siblings: ShortcutNode[]): ShortcutNode[] => {
+    const at = before ? siblings.findIndex((n) => isNode(n, before)) : -1;
+    return at === -1
+      ? [...siblings, node]
+      : [...siblings.slice(0, at), node, ...siblings.slice(at)];
+  };
   if (targetFolderId === null) {
-    next = [...next, extracted];
-    return { tree: next, ok: true };
+    return { tree: place(next), ok: true };
   }
   let inserted = false;
-  const node = extracted;
   const insert = (nodes: ShortcutNode[]): ShortcutNode[] =>
     nodes.map((n) => {
       if (n.type !== "folder") return n;
       if (n.id === targetFolderId) {
         inserted = true;
-        return { ...n, children: [...n.children, node] };
+        return { ...n, children: place(n.children) };
       }
       return { ...n, children: insert(n.children) };
     });

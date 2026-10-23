@@ -62,7 +62,6 @@ type MoveSource =
   | { kind: "file"; path: string }
   | { kind: "dir"; path: string }
   | { kind: "folder"; id: string };
-type DropTargetId = string | "root";
 
 const DRAG_MIME = "application/x-shortcut-move";
 const TREE_DRAG_MIME = "application/x-tree-move";
@@ -188,29 +187,103 @@ function isReachable(p: string, roots: AllowedRoot[], shortcuts: ShortcutNode[])
   return listed(shortcuts);
 }
 
-function isInvalidDrop(
-  tree: ShortcutNode[],
-  source: MoveSource | null,
-  target: DropTargetId,
-): boolean {
-  if (!source) return false;
-  if (source.kind !== "folder") return false;
-  if (target === "root") return false;
-  if (target === source.id) return true;
+// Where a dragged shortcut would land: in the group `parentId` (null = the
+// top level), in front of `before` (null = at the end). `mark` is how the
+// list shows it — a line at one edge of an entry, or a group (or the whole
+// list, "root") lit up.
+type DropSlot = {
+  parentId: string | null;
+  before: MoveSource | null;
+  mark: { key: string; edge: "above" | "below" } | { into: string };
+};
+
+// Anywhere in the list that isn't an entry: the end of the top level.
+const LIST_END_SLOT: DropSlot = { parentId: null, before: null, mark: { into: "root" } };
+
+function refOf(node: ShortcutNode): MoveSource {
+  return node.type === "folder"
+    ? { kind: "folder", id: node.id }
+    : { kind: node.type, path: node.path };
+}
+
+// The same keys the list renders its entries under.
+function refKey(ref: MoveSource): string {
+  if (ref.kind === "folder") return `d:${ref.id}`;
+  return `${ref.kind === "dir" ? "r" : "f"}:${ref.path}`;
+}
+
+function sameSlot(a: DropSlot | null, b: DropSlot): boolean {
+  return (
+    a !== null && a.parentId === b.parentId && JSON.stringify(a.mark) === JSON.stringify(b.mark)
+  );
+}
+
+// Over an entry's row: in front of it on the upper half, behind it on the
+// lower half. `alwaysAbove` is for a folder on disk shown open — "behind it"
+// would mean below everything it lists, far from the pointer.
+function entrySlot(
+  e: React.DragEvent<HTMLElement>,
+  parentId: string | null,
+  me: MoveSource,
+  next: MoveSource | null,
+  alwaysAbove = false,
+): DropSlot {
+  const r = e.currentTarget.getBoundingClientRect();
+  const key = refKey(me);
+  return alwaysAbove || e.clientY < r.top + r.height / 2
+    ? { parentId, before: me, mark: { key, edge: "above" } }
+    : { parentId, before: next, mark: { key, edge: "below" } };
+}
+
+// Over a group's row: the top quarter puts the drop in front of the group,
+// the middle into it (at the end), and the bottom quarter behind it — or, when
+// the group is open with something in it, in front of its first entry.
+function groupSlot(
+  e: React.DragEvent<HTMLElement>,
+  parentId: string | null,
+  folder: ShortcutFolderNode,
+  open: boolean,
+  next: MoveSource | null,
+): DropSlot {
+  const r = e.currentTarget.getBoundingClientRect();
+  const y = e.clientY - r.top;
+  const me = refOf(folder);
+  if (y < r.height / 4) return { parentId, before: me, mark: { key: refKey(me), edge: "above" } };
+  if (y <= (r.height * 3) / 4) {
+    return { parentId: folder.id, before: null, mark: { into: folder.id } };
+  }
+  const first = folder.children[0];
+  if (open && first) {
+    const ref = refOf(first);
+    return { parentId: folder.id, before: ref, mark: { key: refKey(ref), edge: "above" } };
+  }
+  return { parentId, before: next, mark: { key: refKey(me), edge: "below" } };
+}
+
+// Which edge of the entry `key` the current drop slot draws its line on.
+function dropEdge(slot: DropSlot | null, key: string): "above" | "below" | null {
+  return slot && "key" in slot.mark && slot.mark.key === key ? slot.mark.edge : null;
+}
+
+function isInvalidDrop(tree: ShortcutNode[], source: MoveSource | null, slot: DropSlot): boolean {
+  if (!source || source.kind !== "folder" || slot.parentId === null) return false;
+  // A group can't go into itself or anything inside it.
+  if (slot.parentId === source.id) return true;
   const src = findFolderById(tree, source.id);
   if (!src) return false;
-  return findFolderById(src.children, target) !== null;
+  return findFolderById(src.children, slot.parentId) !== null;
 }
 
 type DnD = {
-  dragOverTarget: DropTargetId | null;
+  slot: DropSlot | null;
   source: MoveSource | null;
   tree: ShortcutNode[];
   onDragStart: (e: React.DragEvent, source: MoveSource) => void;
   onDragEnd: () => void;
-  onDragOver: (e: React.DragEvent, target: DropTargetId) => void;
-  onDragLeave: (target: DropTargetId) => void;
-  onDrop: (e: React.DragEvent, target: DropTargetId) => void;
+  onDragOver: (e: React.DragEvent, slot: DropSlot) => void;
+  // The list's own handler: only leaving the list clears the mark.
+  onDragLeave: (e: React.DragEvent) => void;
+  onDrop: (e: React.DragEvent, slot: DropSlot) => void;
 };
 
 type RenameAPI = {
@@ -452,7 +525,7 @@ export function Sidebar({
   );
   // The one open inline draft row, if any (see NewNodeAPI).
   const [newNodeDraft, setNewNodeDraft] = useState<NewNodeDraft | null>(null);
-  const [dragOverTarget, setDragOverTarget] = useState<DropTargetId | null>(null);
+  const [dropSlot, setDropSlot] = useState<DropSlot | null>(null);
   const [dragSource, setDragSource] = useState<MoveSource | null>(null);
   // Row the search box asked to bring into view. A fresh object per request so
   // picking the same result twice scrolls to it again.
@@ -1461,11 +1534,16 @@ export function Sidebar({
     setShortcutTree(data.shortcuts ?? []);
   }, []);
 
-  const handleMove = useCallback(async (source: MoveSource, targetFolderId: string | null) => {
+  const handleMove = useCallback(async (source: MoveSource, slot: DropSlot) => {
     const res = await fetch("/api/shortcuts", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "move", source, targetFolderId }),
+      body: JSON.stringify({
+        action: "move",
+        source,
+        targetFolderId: slot.parentId,
+        before: slot.before,
+      }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -1473,15 +1551,14 @@ export function Sidebar({
       return;
     }
     setShortcutTree(data.shortcuts ?? []);
-    if (targetFolderId !== null) {
-      setCollapsedFolders((prev) =>
-        prev[targetFolderId] ? { ...prev, [targetFolderId]: false } : prev,
-      );
+    const into = slot.parentId;
+    if (into !== null) {
+      setCollapsedFolders((prev) => (prev[into] ? { ...prev, [into]: false } : prev));
     }
   }, []);
 
   const dnd: DnD = {
-    dragOverTarget,
+    slot: dropSlot,
     source: dragSource,
     tree: shortcutTree,
     onDragStart: (e, source) => {
@@ -1491,26 +1568,29 @@ export function Sidebar({
     },
     onDragEnd: () => {
       setDragSource(null);
-      setDragOverTarget(null);
+      setDropSlot(null);
     },
-    onDragOver: (e, target) => {
+    onDragOver: (e, slot) => {
       if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
-      if (isInvalidDrop(shortcutTree, dragSource, target)) {
+      if (isInvalidDrop(shortcutTree, dragSource, slot)) {
         e.dataTransfer.dropEffect = "none";
+        setDropSlot((prev) => (prev === null ? prev : null));
         return;
       }
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
-      if (dragOverTarget !== target) setDragOverTarget(target);
+      setDropSlot((prev) => (sameSlot(prev, slot) ? prev : slot));
     },
-    onDragLeave: (target) => {
-      setDragOverTarget((prev) => (prev === target ? null : prev));
+    onDragLeave: (e) => {
+      const to = e.relatedTarget as Node | null;
+      if (to && e.currentTarget.contains(to)) return;
+      setDropSlot(null);
     },
-    onDrop: (e, target) => {
+    onDrop: (e, slot) => {
       if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
       e.preventDefault();
       e.stopPropagation();
-      setDragOverTarget(null);
+      setDropSlot(null);
       setDragSource(null);
       const json = e.dataTransfer.getData(DRAG_MIME);
       if (!json) return;
@@ -1520,11 +1600,11 @@ export function Sidebar({
       } catch {
         return;
       }
-      if (isInvalidDrop(shortcutTree, source, target)) {
+      if (isInvalidDrop(shortcutTree, source, slot)) {
         toast.error("Cannot drop a folder into itself or its descendants");
         return;
       }
-      handleMove(source, target === "root" ? null : target);
+      handleMove(source, slot);
     },
   };
 
@@ -1754,13 +1834,13 @@ export function Sidebar({
         {!isEmpty && (
           <div
             className={`px-3 pt-3 pb-1 group/shortcuts relative transition-colors ${
-              dnd.dragOverTarget === "root"
+              sameSlot(dnd.slot, LIST_END_SLOT)
                 ? "bg-[color-mix(in_srgb,var(--text)_4%,transparent)] rounded-md"
                 : ""
             }`}
-            onDragOver={(e) => dnd.onDragOver(e, "root")}
-            onDragLeave={() => dnd.onDragLeave("root")}
-            onDrop={(e) => dnd.onDrop(e, "root")}
+            onDragOver={(e) => dnd.onDragOver(e, LIST_END_SLOT)}
+            onDragLeave={(e) => dnd.onDragLeave(e)}
+            onDrop={(e) => dnd.onDrop(e, LIST_END_SLOT)}
           >
             <div className="flex items-center justify-between px-2 mb-1.5 gap-2">
               <button
@@ -1809,6 +1889,7 @@ export function Sidebar({
                 )}
                 <ShortcutTreeView
                   nodes={shortcutTree}
+                  parentId={null}
                   depth={0}
                   selectedPath={selectedPath}
                   onSelect={onSelect}
@@ -3630,8 +3711,21 @@ function MissingIcon() {
   );
 }
 
+// The line a dragged shortcut would land on, at one edge of an entry. The
+// entry's container is `relative`; the line starts at the entry's indent.
+function DropLine({ edge, depth }: { edge: "above" | "below"; depth: number }) {
+  return (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none absolute right-2 z-10 h-0.5 rounded-full bg-[var(--primary)]"
+      style={{ left: `${depth * 12 + 8}px`, [edge === "above" ? "top" : "bottom"]: "-1px" }}
+    />
+  );
+}
+
 function ShortcutTreeView({
   nodes,
+  parentId,
   depth,
   selectedPath,
   onSelect,
@@ -3651,6 +3745,8 @@ function ShortcutTreeView({
   dirs,
 }: {
   nodes: ShortcutNode[];
+  // The group these entries are in; null for the top level.
+  parentId: string | null;
   depth: number;
   selectedPath: string | null;
   onSelect: (path: string) => void;
@@ -3671,12 +3767,16 @@ function ShortcutTreeView({
 }) {
   return (
     <>
-      {nodes.map((node) => {
+      {nodes.map((node, i) => {
+        // Where "behind this entry" is: in front of the next one, or the end.
+        const next = i + 1 < nodes.length ? refOf(nodes[i + 1]) : null;
         if (node.type === "file") {
           return (
             <ShortcutItem
               key={`f:${node.path}`}
               file={node}
+              parentId={parentId}
+              next={next}
               depth={depth}
               isSelected={selectedPath === node.path}
               onSelect={onSelect}
@@ -3692,6 +3792,8 @@ function ShortcutTreeView({
             <ShortcutDirItem
               key={`r:${node.path}`}
               dir={node}
+              parentId={parentId}
+              next={next}
               depth={depth}
               selectedPath={selectedPath}
               onSelect={onSelect}
@@ -3707,6 +3809,8 @@ function ShortcutTreeView({
           <ShortcutFolderItem
             key={`d:${node.id}`}
             folder={node}
+            parentId={parentId}
+            next={next}
             depth={depth}
             selectedPath={selectedPath}
             onSelect={onSelect}
@@ -3733,6 +3837,8 @@ function ShortcutTreeView({
 
 function ShortcutFolderItem({
   folder,
+  parentId,
+  next,
   depth,
   selectedPath,
   onSelect,
@@ -3752,6 +3858,8 @@ function ShortcutFolderItem({
   dirs,
 }: {
   folder: ShortcutFolderNode;
+  parentId: string | null;
+  next: MoveSource | null;
   depth: number;
   selectedPath: string | null;
   onSelect: (path: string) => void;
@@ -3772,10 +3880,14 @@ function ShortcutFolderItem({
 }) {
   const open = !collapsedFolders[folder.id];
   const showForm = addFormFor?.parentId === folder.id;
-  const isDragOver = dnd.dragOverTarget === folder.id;
+  const isDragOver = Boolean(
+    dnd.slot && "into" in dnd.slot.mark && dnd.slot.mark.into === folder.id,
+  );
   const isDragging = dnd.source?.kind === "folder" && dnd.source.id === folder.id;
+  const edge = dropEdge(dnd.slot, refKey(refOf(folder)));
   return (
-    <div className="group/folder">
+    <div className="group/folder relative">
+      {edge && <DropLine edge={edge} depth={depth} />}
       <div
         className={`relative flex items-center transition-colors rounded-sm ${
           isDragOver ? "bg-[color-mix(in_srgb,var(--text)_8%,transparent)]" : ""
@@ -3788,14 +3900,11 @@ function ShortcutFolderItem({
         }}
         onDragEnd={dnd.onDragEnd}
         onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
           e.stopPropagation();
-          dnd.onDragOver(e, folder.id);
+          dnd.onDragOver(e, groupSlot(e, parentId, folder, open, next));
         }}
-        onDragLeave={(e) => {
-          e.stopPropagation();
-          dnd.onDragLeave(folder.id);
-        }}
-        onDrop={(e) => dnd.onDrop(e, folder.id)}
+        onDrop={(e) => dnd.onDrop(e, groupSlot(e, parentId, folder, open, next))}
         onContextMenu={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -3861,6 +3970,7 @@ function ShortcutFolderItem({
           )}
           <ShortcutTreeView
             nodes={folder.children}
+            parentId={folder.id}
             depth={depth + 1}
             selectedPath={selectedPath}
             onSelect={onSelect}
@@ -3889,9 +3999,11 @@ function ShortcutFolderItem({
 // folder's tree — the rows a root's tree has, with the same actions. The row
 // keeps its own open/closed state (dirShortcutFoldKey). Tree rows and files
 // from Finder can be dropped on it, as on a folder row in the tree; a dragged
-// shortcut passes through to the list.
+// shortcut lands in front of it or behind it in the list.
 function ShortcutDirItem({
   dir,
+  parentId,
+  next,
   depth,
   selectedPath,
   onSelect,
@@ -3902,6 +4014,8 @@ function ShortcutDirItem({
   view,
 }: {
   dir: ShortcutDirNode;
+  parentId: string | null;
+  next: MoveSource | null;
   depth: number;
   selectedPath: string | null;
   onSelect: (path: string) => void;
@@ -3924,8 +4038,15 @@ function ShortcutDirItem({
   const takesDrag = (e: React.DragEvent) =>
     !missing &&
     (e.dataTransfer.types.includes(TREE_DRAG_MIME) || e.dataTransfer.types.includes("Files"));
+  const isShortcutDrag = (e: React.DragEvent) => e.dataTransfer.types.includes(DRAG_MIME);
+  const me = refOf(dir);
+  // Shown open with something in it, "behind" would be below all of that.
+  const slotAt = (e: React.DragEvent<HTMLElement>) =>
+    entrySlot(e, parentId, me, next, open && !missing && (entries?.length ?? 0) > 0);
+  const edge = dropEdge(dnd.slot, refKey(me));
   return (
-    <div>
+    <div className="relative">
+      {edge && <DropLine edge={edge} depth={depth} />}
       <div
         className={`tree-row group/shortcut rounded-md transition-colors ${
           isDropTarget ? "bg-[color-mix(in_srgb,var(--primary)_14%,transparent)]" : ""
@@ -3938,6 +4059,11 @@ function ShortcutDirItem({
           view.dnd.onDragEnter(e, dir.path);
         }}
         onDragOver={(e) => {
+          if (isShortcutDrag(e)) {
+            e.stopPropagation();
+            dnd.onDragOver(e, slotAt(e));
+            return;
+          }
           if (!takesDrag(e)) return;
           e.stopPropagation();
           view.dnd.onDragOver(e, dir.path);
@@ -3948,6 +4074,10 @@ function ShortcutDirItem({
           view.dnd.onDragLeave(dir.path);
         }}
         onDrop={(e) => {
+          if (isShortcutDrag(e)) {
+            dnd.onDrop(e, slotAt(e));
+            return;
+          }
           if (!takesDrag(e)) return;
           // What lands here should show where it landed.
           view.onOpen(dir.path);
@@ -4072,6 +4202,8 @@ function ShortcutDirItem({
 
 function ShortcutItem({
   file,
+  parentId,
+  next,
   depth,
   isSelected,
   onSelect,
@@ -4081,6 +4213,8 @@ function ShortcutItem({
   rename,
 }: {
   file: ShortcutFileNode;
+  parentId: string | null;
+  next: MoveSource | null;
   depth: number;
   isSelected: boolean;
   onSelect: (path: string) => void;
@@ -4097,11 +4231,20 @@ function ShortcutItem({
   const missing = file.exists === false;
   const isDragging = dnd.source?.kind === "file" && dnd.source.path === file.path;
   const isEditing = rename.editingPath === file.path;
+  const me = refOf(file);
+  const edge = dropEdge(dnd.slot, refKey(me));
   return (
     <div
       className={`tree-row group/shortcut ${isDragging ? "opacity-50" : ""}`}
       data-reveal-path={file.path}
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+        e.stopPropagation();
+        dnd.onDragOver(e, entrySlot(e, parentId, me, next));
+      }}
+      onDrop={(e) => dnd.onDrop(e, entrySlot(e, parentId, me, next))}
     >
+      {edge && <DropLine edge={edge} depth={depth} />}
       {isEditing ? (
         <AliasRenameInput
           initial={file.alias ?? baseDisplay}
