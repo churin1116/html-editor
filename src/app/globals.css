@@ -130,6 +130,16 @@ button {
   background: color-mix(in srgb, var(--text) 4%, transparent);
   color: var(--text);
 }
+/* ⌘F matches in the Tiptap editor (find-bar.tsx): every match, and the
+   current one. Decorations only — never saved. */
+.tiptap .find-match {
+  background: color-mix(in srgb, var(--warning) 35%, transparent);
+  border-radius: 2px;
+}
+.tiptap .find-match-current {
+  background: color-mix(in srgb, var(--warning) 75%, transparent);
+}
+
 /* A folder listed as a shortcut that is gone from disk — marked like a
    missing file shortcut. */
 .tree-dir.is-missing,

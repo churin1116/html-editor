@@ -4,6 +4,7 @@ import { DescriptionDetail, DescriptionList, DescriptionTerm } from "@/lib/defin
 import { Details, type DetailsDefaultState, Summary } from "@/lib/details-node";
 import { promptDialog } from "@/lib/dialogs";
 import { applyHtmlAction } from "@/lib/editor-actions";
+import { FindHighlight } from "@/lib/find-replace";
 import { attachImageResizer } from "@/lib/image-resize";
 import {
   Abbr,
@@ -199,6 +200,8 @@ export function Editor({
       SpeechName,
       SpeechBubble,
       EditorShortcuts,
+      // Paints ⌘F matches (find-bar.tsx); never part of the document.
+      FindHighlight,
       Div,
       Aside,
       Figure,
