@@ -1,6 +1,7 @@
-// "台本をコピー" — a question-box script (a document with an h2 「台本」) as
-// plain text that pastes straight into Apple Notes, where the teleprompter app
-// (~/MyApps/261005-teleprompter) picks it up:
+// "台本をコピー" — a video script (a document with an h2 「台本」, or the
+// question box's 「今回の質問」/「今回の噂」) as plain text that pastes straight
+// into Apple Notes, where the teleprompter app (~/MyApps/261005-teleprompter)
+// picks it up:
 //
 //   line 1                          the h1 — Notes makes it the note's name,
 //                                   and the teleprompter drops it
@@ -11,11 +12,14 @@
 // What counts as the script follows the video editor's importer
 // (261009-video-editor src/lib/server/script-import.ts): paragraphs and speech
 // bubbles, struck text dropped, up to the first <hr> or the first reference
-// chapter. Unlike the importer, the cold open before 「台本」 is kept — it is
-// filmed too. Headings, tables, notes to the author (p.note) and blank
-// spacers (p.blank) aren't read aloud and are left out.
+// chapter. Unlike the importer, the cold open before the heading is kept — it
+// is filmed too. Headings, tables, blockquotes (【字幕】/【画面】 notes for the
+// edit), notes to the author (p.note) and blank spacers (p.blank) aren't read
+// aloud and are left out.
 
-const SCRIPT_HEADING = "台本";
+// 「台本」 is ミナミナ's and the older question-box scripts'; the question box
+// now opens its script with 「今回の質問」 (a 定番 episode) or 「今回の噂」 (a 話題 one).
+const SCRIPT_HEADINGS = new Set(["台本", "今回の質問", "今回の噂"]);
 const NOT_SCRIPT = /^(狼のサブクエスチョン|資料|引用|YouTube|参考|メモ)/;
 const WOLF_NAMES = new Set(["オオカミ", "狼"]);
 const WOLF_PREFIX = "オオカミ：";
@@ -29,23 +33,23 @@ function collapse(text: string): string {
   return text.replace(SPACES, " ").trim();
 }
 
-/** Whether the document has the 「台本」 heading. A scan of the serialized HTML, cheap enough to run on every edit. */
+/** Whether the document has a script heading. A scan of the serialized HTML, cheap enough to run on every edit. */
 export function hasScriptHeading(html: string): boolean {
-  if (!html.includes(SCRIPT_HEADING)) return false;
+  if (![...SCRIPT_HEADINGS].some((heading) => html.includes(heading))) return false;
   for (const match of html.matchAll(H2)) {
     const text = match[1].replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ");
-    if (collapse(text) === SCRIPT_HEADING) return true;
+    if (SCRIPT_HEADINGS.has(collapse(text))) return true;
   }
   return false;
 }
 
 export type ScriptCopy = { text: string; blocks: number };
 
-/** The script as Notes text; null when the document has no 「台本」 heading. */
+/** The script as Notes text; null when the document has no script heading. */
 export function scriptToNotesText(html: string, fallbackTitle: string): ScriptCopy | null {
   const doc = new DOMParser().parseFromString(html, "text/html");
-  const heading = Array.from(doc.querySelectorAll("h2")).find(
-    (h) => collapse(h.textContent ?? "") === SCRIPT_HEADING,
+  const heading = Array.from(doc.querySelectorAll("h2")).find((h) =>
+    SCRIPT_HEADINGS.has(collapse(h.textContent ?? "")),
   );
   // The script is the heading's siblings — from the first one, so the cold open is included.
   const root = heading?.parentElement;

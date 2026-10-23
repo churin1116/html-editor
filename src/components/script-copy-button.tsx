@@ -4,9 +4,10 @@ import { hasScriptHeading, scriptToNotesText } from "@/lib/script-copy";
 import { useMemo } from "react";
 import { toast } from "sonner";
 
-// Top-right of the document area, shown only while the open HTML is a
-// question-box script (has an h2 「台本」). Copies from the editor's current
-// HTML, so unsaved edits are included. See script-copy.ts for the format.
+// Top-right of the document area, shown only while the open HTML is a video
+// script (has an h2 「台本」, 「今回の質問」 or 「今回の噂」). Copies from the
+// editor's current HTML, so unsaved edits are included. See script-copy.ts for
+// the format.
 export function ScriptCopyButton({
   html,
   title,
