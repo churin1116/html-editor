@@ -3,6 +3,7 @@
 import { confirmDialog, promptDialog } from "@/lib/dialogs";
 import { ACTIONS, type ActionIcon, type ActionId, type EditorMode } from "@/lib/editor-actions";
 import type { SidebarCollapse, SidebarCollapsePatch } from "@/lib/sidebar-collapse";
+import { OPEN_FILE_REVEAL_SCRIPT, revealOpenFile, shortcutFolderChain } from "@/lib/sidebar-reveal";
 import {
   MAX_SEARCH_RESULTS,
   type SearchEntry,
@@ -127,24 +128,6 @@ function findFolderById(nodes: ShortcutNode[], id: string): ShortcutFolderNode |
     if (n.id === id) return n;
     const r = findFolderById(n.children, id);
     if (r) return r;
-  }
-  return null;
-}
-
-// Ids of the shortcut folders that have to be open for `path` to be visible,
-// outermost first. null when the path isn't a shortcut at all.
-function shortcutFolderChain(
-  nodes: ShortcutNode[],
-  path: string,
-  trail: string[] = [],
-): string[] | null {
-  for (const n of nodes) {
-    if (n.type === "file") {
-      if (n.path === path) return trail;
-    } else {
-      const found = shortcutFolderChain(n.children, path, [...trail, n.id]);
-      if (found) return found;
-    }
   }
   return null;
 }
@@ -337,6 +320,7 @@ export function Sidebar({
   initialShortcuts,
   initialWorkspace,
   initialCollapse,
+  savedCollapse,
 }: {
   selectedPath: string | null;
   onSelect: (path: string | null) => void;
@@ -360,6 +344,9 @@ export function Sidebar({
   initialShortcuts: ShortcutNode[];
   initialWorkspace: string | null;
   initialCollapse: SidebarCollapse;
+  // The folds as saved on disk. initialCollapse differs from it only by the
+  // folders the server opened to show the open file (lib/sidebar-reveal).
+  savedCollapse: SidebarCollapse;
 }) {
   const [roots, setRoots] = useState<AllowedRoot[]>(initialRoots);
   const [trees, setTrees] = useState<Record<string, TreeEntry[]>>(initialTrees);
@@ -392,17 +379,17 @@ export function Sidebar({
 
   // One-time migration from the old localStorage collapse persistence. Only
   // adopted when nothing had been saved since, so later state always wins.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once; initialCollapse never changes after mount
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once; savedCollapse never changes after mount
   useEffect(() => {
     try {
       const raw = localStorage.getItem(COLLAPSE_STORAGE_KEY);
       if (!raw) return;
       localStorage.removeItem(COLLAPSE_STORAGE_KEY);
       const nothingSaved =
-        Object.keys(initialCollapse.folders).length === 0 &&
-        Object.keys(initialCollapse.dirs).length === 0 &&
-        initialCollapse.dirDefaultClosed.length === 0 &&
-        !initialCollapse.shortcuts;
+        Object.keys(savedCollapse.folders).length === 0 &&
+        Object.keys(savedCollapse.dirs).length === 0 &&
+        savedCollapse.dirDefaultClosed.length === 0 &&
+        !savedCollapse.shortcuts;
       if (!nothingSaved) return;
       const saved = JSON.parse(raw) as {
         folders?: Record<string, boolean>;
@@ -429,9 +416,9 @@ export function Sidebar({
     }),
     [collapsedFolders, collapsedDirs, dirDefaultClosed, shortcutsCollapsed],
   );
-  // `saved` starts as the state the server rendered, so a page load by
-  // itself saves nothing.
-  const collapseSave = useRef({ saved: collapseState, latest: collapseState, busy: false });
+  // `saved` starts as what is on disk, so a page load by itself saves nothing
+  // but the folders the server opened to show the open file.
+  const collapseSave = useRef({ saved: savedCollapse, latest: collapseState, busy: false });
 
   // A state that still came from the old cookie is saved in full right away;
   // the cookie goes once that save has landed.
@@ -1446,13 +1433,44 @@ export function Sidebar({
     setTimeout(() => el.classList.remove("is-revealed"), 1400);
   }, [reveal, trees, collapsedDirs, collapsedFolders, shortcutsCollapsed, shortcutTree]);
 
+  // A page opens with the sidebar at the open file (lib/sidebar-reveal). The
+  // inline script at the end of the sidebar does it for the first paint, but
+  // a sidebar that starts out closed has nothing to measure then; it gets it
+  // here, the first time it opens. Opening animates the width and reflows the
+  // rows above the file, so this redoes it on every resize, each time from
+  // where the scroll started — the result is what one pass at the final size
+  // gives. Once the size settles, the scroll position is the user's.
+  useEffect(() => {
+    const box = scrollRef.current;
+    if (!box || box.clientWidth > 0) return;
+    const from = box.scrollTop;
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const observer = new ResizeObserver(() => {
+      clearTimeout(settle);
+      if (box.clientWidth === 0) return;
+      box.scrollTop = from;
+      revealOpenFile(box);
+      settle = setTimeout(() => observer.disconnect(), 300);
+    });
+    observer.observe(box);
+    return () => {
+      clearTimeout(settle);
+      observer.disconnect();
+    };
+  }, []);
+
   if (error) return <div className="p-5 text-sm text-[var(--danger)]">{error}</div>;
 
   const isEmpty = roots.length === 0;
 
   return (
     <div className="text-sm h-full flex flex-col">
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto"
+        data-sidebar-scroll
+        data-open-path={selectedPath ?? undefined}
+      >
         {isEmpty && !showAddForm && <EmptyState onAdd={() => setShowAddForm(true)} />}
 
         {!isEmpty && (
@@ -1561,6 +1579,7 @@ export function Sidebar({
             single root is visible — with several, "the root" is ambiguous. */}
         <div
           className={`px-3 pt-2 pb-6 ${treeDragging.length > 0 && visibleRoots.length === 1 ? "min-h-[200px]" : ""}`}
+          data-tree-area
           onDragEnter={(e) => {
             if (visibleRoots.length !== 1) return;
             treeDnd.onDragEnter(e, visibleRoots[0].path);
@@ -1662,6 +1681,15 @@ export function Sidebar({
         </a>
         <SidebarSearch index={searchIndex} onPick={openSearchHit} />
       </div>
+      {/* Scrolls the tree to the open file while the page is still being
+          parsed (lib/sidebar-reveal). It runs once, from the server's HTML;
+          the client's copy of the source can compile differently, so
+          hydration doesn't compare the two. */}
+      <script
+        suppressHydrationWarning
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: the script is our own function's source, not user input.
+        dangerouslySetInnerHTML={{ __html: OPEN_FILE_REVEAL_SCRIPT }}
+      />
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x}

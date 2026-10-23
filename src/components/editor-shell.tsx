@@ -51,6 +51,7 @@ export function EditorShell({
   initialShortcuts,
   initialWorkspace,
   initialCollapse,
+  savedCollapse,
 }: {
   initialSelected: string | null;
   initialFile: LoadedFile | null;
@@ -62,6 +63,7 @@ export function EditorShell({
   initialShortcuts: ShortcutNodeWithStatus[];
   initialWorkspace: string | null;
   initialCollapse: SidebarCollapse;
+  savedCollapse: SidebarCollapse;
 }) {
   const [selected, setSelected] = useState<string | null>(initialSelected);
   const [file, setFile] = useState<LoadedFile | null>(initialFile);
@@ -427,6 +429,7 @@ export function EditorShell({
             initialShortcuts={initialShortcuts}
             initialWorkspace={initialWorkspace}
             initialCollapse={initialCollapse}
+            savedCollapse={savedCollapse}
           />
         </div>
       </aside>

@@ -3,6 +3,7 @@ import { loadAllowedRoots } from "@/lib/allowed-roots";
 import { loadFileFromDisk } from "@/lib/load-file";
 import { loadShortcutTreeWithStatus } from "@/lib/shortcuts";
 import { loadSidebarCollapse } from "@/lib/sidebar-collapse";
+import { unfoldToOpenFile } from "@/lib/sidebar-reveal";
 import { type TreeEntry, loadTreeForRoot } from "@/lib/tree";
 import { cookies } from "next/headers";
 
@@ -75,7 +76,16 @@ export default async function Page({
   // Which folders are closed is read here so the first paint renders them
   // already closed instead of collapsing them after hydration. Until its first
   // save it still comes from the cookie it used to live in.
-  const initialCollapse = await loadSidebarCollapse(cookieStore.get("sidebarCollapse")?.value);
+  const savedCollapse = await loadSidebarCollapse(cookieStore.get("sidebarCollapse")?.value);
+  // The folders hiding the open file are rendered open, so its row is there
+  // on the first paint too; the Sidebar then saves them as opened.
+  const initialCollapse = unfoldToOpenFile(
+    savedCollapse,
+    initialSelected,
+    visibleRoots.map((r) => r.path),
+    initialTrees,
+    initialShortcuts,
+  );
 
   return (
     <EditorShell
@@ -89,6 +99,7 @@ export default async function Page({
       initialShortcuts={initialShortcuts}
       initialWorkspace={activeRoot?.path ?? null}
       initialCollapse={initialCollapse}
+      savedCollapse={savedCollapse}
     />
   );
 }
