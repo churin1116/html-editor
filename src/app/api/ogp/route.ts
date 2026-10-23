@@ -1,4 +1,5 @@
 import { lookup } from "node:dns/promises";
+import type { LinkCardMeta } from "@/lib/link-card";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -8,12 +9,13 @@ export const dynamic = "force-dynamic";
 // Reads a page's OGP metadata (title / description / og:image / site name /
 // favicon) server-side for the editor's link card. The result is baked into
 // the card's data-* attributes at insert time, so opening a saved file never
-// calls this route — it exists only while editing.
+// calls this route — it exists only while editing. YouTube video links are
+// the exception: they are read from YouTube's oEmbed instead (youtubeCard).
 //
 // The editor binds to localhost, but this route still turns "a URL in the
 // document" into "a request the machine makes", so it keeps the usual guards:
 // http(s) only, no private/loopback/link-local hosts (re-checked on every
-// redirect hop), an 8s timeout and a 512KB read ceiling.
+// redirect hop), an 8s timeout and a read ceiling (512KB; 2MB for YouTube).
 
 const MAX_REDIRECTS = 3;
 const FETCH_TIMEOUT_MS = 8000;
@@ -119,12 +121,12 @@ async function fetchWithGuards(startUrl: URL): Promise<{ res: Response; finalUrl
   return null;
 }
 
-async function readBodyLimited(res: Response): Promise<string> {
+async function readBodyLimited(res: Response, maxBytes = MAX_BODY_BYTES): Promise<string> {
   const reader = res.body?.getReader();
   if (!reader) return "";
   const chunks: Uint8Array[] = [];
   let total = 0;
-  while (total < MAX_BODY_BYTES) {
+  while (total < maxBytes) {
     const { done, value } = await reader.read();
     if (done) break;
     chunks.push(value);
@@ -190,6 +192,97 @@ function extractFavicon(html: string, baseUrl: URL): string {
   return new URL("/favicon.ico", baseUrl).toString();
 }
 
+// YouTube's pages carry their OGP tags about 800KB into a 1.2–2MB document —
+// past the usual read ceiling — so its links came back with neither a title
+// nor an image. Video links are answered from YouTube's oEmbed endpoint
+// instead, a small JSON with the title and the channel. Other pages (a
+// channel, a playlist) have no oEmbed; the generic path reads them up to
+// this larger ceiling.
+const YOUTUBE_MAX_BODY_BYTES = 2 * 1024 * 1024;
+const YOUTUBE_HOSTS = new Set([
+  "youtube.com",
+  "m.youtube.com",
+  "music.youtube.com",
+  "youtube-nocookie.com",
+  "youtu.be",
+]);
+// The icon a YouTube page links to sits under a build-versioned path that
+// moves with every deploy; this one stays put.
+const YOUTUBE_FAVICON = "https://www.youtube.com/favicon.ico";
+
+function isYouTube(url: URL): boolean {
+  return YOUTUBE_HOSTS.has(url.hostname.replace(/^www\./, ""));
+}
+
+// watch?v=, youtu.be/, /shorts/, /live/ and /embed/ all name the video by its
+// 11-character id.
+function youtubeVideoId(url: URL): string | null {
+  if (!isYouTube(url)) return null;
+  let id: string | null | undefined;
+  if (url.hostname === "youtu.be") {
+    id = url.pathname.split("/")[1];
+  } else if (url.pathname === "/watch") {
+    id = url.searchParams.get("v");
+  } else {
+    id = url.pathname.match(/^\/(?:shorts|live|embed)\/([^/]+)/)?.[1];
+  }
+  return id && /^[\w-]{11}$/.test(id) ? id : null;
+}
+
+// Whether a URL answers 200. The body is dropped unread.
+async function respondsOk(target: URL): Promise<boolean> {
+  try {
+    const fetched = await fetchWithGuards(target);
+    fetched?.res.body?.cancel().catch(() => {});
+    return fetched?.res.ok ?? false;
+  } catch {
+    return false;
+  }
+}
+
+async function youtubeOEmbed(id: string): Promise<{ title?: string; author_name?: string } | null> {
+  const watch = `https://www.youtube.com/watch?v=${id}`;
+  try {
+    const fetched = await fetchWithGuards(
+      new URL(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(watch)}`),
+    );
+    if (!fetched?.res.ok) {
+      fetched?.res.body?.cancel().catch(() => {});
+      return null;
+    }
+    return JSON.parse(await readBodyLimited(fetched.res));
+  } catch {
+    return null;
+  }
+}
+
+// The card keeps the URL as given, so a `t=` timestamp still opens the video
+// at that point. oEmbed refuses some videos (embedding turned off by the
+// owner, private, removed); the card then still gets the thumbnail and the
+// site, with the URL standing in for the title.
+//
+// The thumbnail is built from the id rather than taken from oEmbed, whose
+// hqdefault.jpg is 4:3 with black bands above and below a 16:9 frame — bands
+// the card's narrow thumbnail would show. maxresdefault.jpg (HD uploads only)
+// and mqdefault.jpg (always there, 320px wide) are both 16:9.
+//
+// The channel goes where a page's description would: oEmbed has none, and the
+// channel is what tells a reader whose video it is.
+async function youtubeCard(url: URL, id: string): Promise<LinkCardMeta> {
+  const [oembed, hasMaxres] = await Promise.all([
+    youtubeOEmbed(id),
+    respondsOk(new URL(`https://i.ytimg.com/vi/${id}/maxresdefault.jpg`)),
+  ]);
+  return {
+    url: url.toString(),
+    title: oembed?.title || null,
+    description: oembed?.author_name || null,
+    image: `https://i.ytimg.com/vi/${id}/${hasMaxres ? "maxresdefault" : "mqdefault"}.jpg`,
+    siteName: "YouTube",
+    favicon: YOUTUBE_FAVICON,
+  };
+}
+
 export async function GET(req: Request) {
   const raw = new URL(req.url).searchParams.get("url");
   if (!raw) {
@@ -199,6 +292,8 @@ export async function GET(req: Request) {
   if (!url) {
     return NextResponse.json({ error: "Unsupported or non-public URL" }, { status: 400 });
   }
+  const videoId = youtubeVideoId(url);
+  if (videoId) return NextResponse.json(await youtubeCard(url, videoId));
 
   try {
     const fetched = await fetchWithGuards(url);
@@ -221,7 +316,11 @@ export async function GET(req: Request) {
       });
     }
 
-    const html = await readBodyLimited(fetched.res);
+    const youtube = isYouTube(base);
+    const html = await readBodyLimited(
+      fetched.res,
+      youtube ? YOUTUBE_MAX_BODY_BYTES : MAX_BODY_BYTES,
+    );
     let image = extractMeta(html, "og:image") ?? extractMeta(html, "twitter:image");
     if (image) {
       try {
@@ -234,10 +333,14 @@ export async function GET(req: Request) {
     return NextResponse.json({
       url: base.toString(),
       title: extractMeta(html, "og:title") ?? extractTitle(html),
-      description: extractMeta(html, "og:description") ?? extractMeta(html, "description"),
+      // A YouTube page with no description of its own (a playlist, say) leaves
+      // og:description empty, and its plain description meta is then the
+      // site's tagline, which says nothing about the page.
+      description:
+        extractMeta(html, "og:description") ?? (youtube ? null : extractMeta(html, "description")),
       image,
       siteName: extractMeta(html, "og:site_name") ?? base.hostname,
-      favicon: extractFavicon(html, base),
+      favicon: youtube ? YOUTUBE_FAVICON : extractFavicon(html, base),
     });
   } catch {
     return NextResponse.json({ error: "Failed to fetch URL" }, { status: 422 });
