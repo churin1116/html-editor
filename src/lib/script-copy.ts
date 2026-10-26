@@ -12,7 +12,8 @@
 // What counts as the script follows the video editor's importer
 // (261009-video-editor src/lib/server/script-import.ts): paragraphs and speech
 // bubbles, struck text dropped, up to the first <hr> or the first reference
-// chapter. Unlike the importer, the cold open before the heading is kept — it
+// chapter — an h2, or a chapter folded into a <details> whose summary carries
+// the heading. Unlike the importer, the cold open before the heading is kept — it
 // is filmed too. Headings, tables, blockquotes (【字幕】/【画面】 notes for the
 // edit), notes to the author (p.note) and blank spacers (p.blank) aren't read
 // aloud and are left out.
@@ -60,6 +61,11 @@ export function scriptToNotesText(html: string, fallbackTitle: string): ScriptCo
     const tag = node.tagName.toLowerCase();
     if (tag === "hr") break;
     if (tag === "h2" && NOT_SCRIPT.test(collapse(node.textContent ?? ""))) break;
+    if (
+      tag === "details" &&
+      NOT_SCRIPT.test(collapse(node.querySelector("summary")?.textContent ?? ""))
+    )
+      break;
     if (tag === "p") {
       if (node.classList.contains("blank") || node.classList.contains("note")) continue;
       const text = paragraphText(node, "\n");
