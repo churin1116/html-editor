@@ -16,28 +16,51 @@
 //     it, otherwise at the pointer with the caret moved there. It stays until
 //     the next click elsewhere, keystroke, scroll or window blur.
 //     Shift+right-click still gets the native menu (copy/paste, spelling).
+//   - resting the pointer on a button for TOOLTIP_DELAY shows a borderless
+//     tooltip with its name and shortcut. It stands in for the native title
+//     tooltip, which has a border, comes up sooner and has no room for the key.
 //
 // The root carries data-he-ui so HtmlSource's save-time cleaner strips it
 // from serialized output (same convention as the image-resize overlay).
 
 // contextOnly: shown only when the bar was opened by right-click — for
 // block insertions that make sense at a pointed-at spot, not on a selection.
+// shortcut: the key that does the same, shown in the hover tooltip.
 export type ToolbarButton =
   | { type: "separator"; contextOnly?: boolean }
   | {
       type?: "button";
       label: string;
       title: string;
+      shortcut?: string;
       style?: string;
       action: () => void;
       isActive?: () => boolean;
       contextOnly?: boolean;
     };
 
+// The keys both HTML editors bind for the toolbar's actions: Tiptap's
+// (StarterKit's defaults, with the overrides in editor.tsx and
+// tag-preserving-marks.ts) and their designMode mirror (html-source.tsx's
+// keydown handler). Change a binding there and its label here together.
+export const TOOLBAR_SHORTCUTS = {
+  bold: "⌘+B",
+  italic: "⌘+I",
+  strike: "⌘+Shift+X",
+  code: "⌘+Shift+E",
+  h2: "⌘+Option+2",
+  h3: "⌘+Option+3",
+  list: "⌘+Shift+8",
+  numList: "⌘+Shift+7",
+  quote: "⌘+Shift+B",
+  link: "⌘+K",
+} as const;
+
 type Rect = { left: number; top: number; bottom: number; width: number; height: number };
 
 const ACCENT = "#4f7cf7";
 const GAP = 8;
+const TOOLTIP_DELAY = 2000;
 
 export function attachSelectionToolbar(opts: {
   doc: Document;
@@ -56,6 +79,51 @@ export function attachSelectionToolbar(opts: {
   bar.style.cssText =
     "position: fixed; display: none; z-index: 2147483647; background: #fff; border: none; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.14), 0 2px 6px rgba(0,0,0,0.06); padding: 3px; white-space: nowrap; font-family: -apple-system, BlinkMacSystemFont, sans-serif; user-select: none;";
 
+  // Lives inside the bar, so it hides with it and inherits data-he-ui.
+  const tip = doc.createElement("div");
+  tip.setAttribute("role", "tooltip");
+  tip.style.cssText =
+    "position: fixed; display: none; background: rgba(28,28,28,0.92); color: #fff; border: none; border-radius: 6px; padding: 4px 8px; font-size: 11.5px; line-height: 16px; pointer-events: none;";
+  let tipTimer = 0;
+  // Which side of its anchor the bar sits on; the tooltip goes on the far
+  // side of the bar so it covers neither the selection nor the buttons.
+  let barBelow = false;
+
+  const hideTip = () => {
+    win.clearTimeout(tipTimer);
+    tip.style.display = "none";
+  };
+
+  const showTip = (btn: HTMLElement, title: string, shortcut?: string) => {
+    tip.replaceChildren(title);
+    if (shortcut) {
+      const key = doc.createElement("span");
+      key.textContent = shortcut;
+      key.style.cssText = "margin-left: 8px; color: rgba(255,255,255,0.62);";
+      tip.appendChild(key);
+    }
+    tip.style.visibility = "hidden";
+    tip.style.display = "block";
+    const tw = tip.offsetWidth;
+    const th = tip.offsetHeight;
+    const b = btn.getBoundingClientRect();
+    const r = bar.getBoundingClientRect();
+    const viewW = doc.documentElement.clientWidth || win.innerWidth;
+    const viewH = doc.documentElement.clientHeight || win.innerHeight;
+    const left = Math.min(
+      Math.max(b.left + b.width / 2 - tw / 2, GAP),
+      Math.max(viewW - tw - GAP, GAP),
+    );
+    const above = r.top - th - GAP;
+    const below = r.bottom + GAP;
+    let top = barBelow ? below : above;
+    if (barBelow && below + th > viewH - GAP) top = above;
+    if (!barBelow && above < GAP) top = below;
+    tip.style.left = `${left}px`;
+    tip.style.top = `${top}px`;
+    tip.style.visibility = "";
+  };
+
   const actionButtons: { el: HTMLButtonElement; isActive?: () => boolean }[] = [];
   const contextOnly: HTMLElement[] = [];
   for (const b of buttons) {
@@ -70,16 +138,23 @@ export function attachSelectionToolbar(opts: {
     const btn = doc.createElement("button");
     btn.type = "button";
     btn.textContent = b.label;
-    btn.title = b.title;
+    // No title attribute: the tooltip below replaces the native one.
+    btn.setAttribute("aria-label", b.shortcut ? `${b.title} ${b.shortcut}` : b.title);
     btn.style.cssText = `display: inline-block; min-width: 26px; height: 26px; padding: 0 6px; margin: 0 1px; border: none; border-radius: 5px; background: transparent; color: #333; font-size: 12.5px; line-height: 26px; cursor: pointer; vertical-align: middle; ${b.style ?? ""}`;
     btn.addEventListener("mouseenter", () => {
       if (btn.dataset.active !== "1") btn.style.background = "#f2f2f2";
+      hideTip();
+      tipTimer = win.setTimeout(() => showTip(btn, b.title, b.shortcut), TOOLTIP_DELAY);
     });
     btn.addEventListener("mouseleave", () => {
       if (btn.dataset.active !== "1") btn.style.background = "transparent";
+      hideTip();
     });
     // preventDefault keeps the selection alive through the click.
-    btn.addEventListener("mousedown", (e) => e.preventDefault());
+    btn.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      hideTip();
+    });
     btn.addEventListener("click", () => {
       b.action();
       refreshActive();
@@ -89,6 +164,7 @@ export function attachSelectionToolbar(opts: {
     if (b.contextOnly) contextOnly.push(btn);
     bar.appendChild(btn);
   }
+  bar.appendChild(tip);
 
   const refreshActive = () => {
     for (const { el, isActive } of actionButtons) {
@@ -106,6 +182,7 @@ export function attachSelectionToolbar(opts: {
 
   const hide = () => {
     pinned = null;
+    hideTip();
     bar.style.display = "none";
   };
 
@@ -122,7 +199,8 @@ export function attachSelectionToolbar(opts: {
       Math.max(rect.left + rect.width / 2 - bw / 2, GAP),
       Math.max(viewW - bw - GAP, GAP),
     );
-    const top = rect.top - bh - GAP >= GAP ? rect.top - bh - GAP : rect.bottom + GAP;
+    barBelow = rect.top - bh - GAP < GAP;
+    const top = barBelow ? rect.bottom + GAP : rect.top - bh - GAP;
     bar.style.left = `${left}px`;
     bar.style.top = `${top}px`;
     bar.style.visibility = "visible";
@@ -188,9 +266,13 @@ export function attachSelectionToolbar(opts: {
     hide();
   };
   const onKeyDown = (e: KeyboardEvent) => {
-    if (pinned && !["Shift", "Control", "Alt", "Meta"].includes(e.key)) hide();
+    // Modifiers alone keep the tooltip up while its shortcut is being pressed.
+    if (["Shift", "Control", "Alt", "Meta"].includes(e.key)) return;
+    hideTip();
+    if (pinned) hide();
   };
   const onBlur = () => {
+    hideTip();
     // Clicks outside an iframe never reach its document — blur does.
     if (pinned) hide();
   };
@@ -200,6 +282,7 @@ export function attachSelectionToolbar(opts: {
     win.setTimeout(update, 0);
   };
   const onScroll = () => {
+    hideTip();
     if (pinned) hide();
     else if (bar.style.display !== "none") update();
   };
@@ -224,6 +307,7 @@ export function attachSelectionToolbar(opts: {
     doc.removeEventListener("scroll", onScroll, true);
     win.removeEventListener("resize", onScroll);
     win.removeEventListener("blur", onBlur);
+    win.clearTimeout(tipTimer);
     bar.remove();
   };
 }

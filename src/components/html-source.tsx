@@ -5,7 +5,11 @@ import { attachImageResizer } from "@/lib/image-resize";
 import { isSingleUrl } from "@/lib/link-card";
 import { followLink, linkHrefToOpen, resolveLinkHref, trackLinkModifier } from "@/lib/link-open";
 import { attachMarkdownInputRules, formatBlockPreservingAttrs } from "@/lib/md-input-rules";
-import { type ToolbarButton, attachSelectionToolbar } from "@/lib/selection-toolbar";
+import {
+  TOOLBAR_SHORTCUTS,
+  type ToolbarButton,
+  attachSelectionToolbar,
+} from "@/lib/selection-toolbar";
 import { attachSpeechMenu } from "@/lib/speech";
 import {
   SPEECH_EDITING_CSS,
@@ -238,9 +242,14 @@ export function HtmlSource({
             cmd.toggleBlockquote();
             return;
           }
-          if (key === "s") {
+          if (key === "x") {
             e.preventDefault();
             cmd.execInline("strikeThrough", "strike", "s");
+            return;
+          }
+          if (key === "e") {
+            e.preventDefault();
+            cmd.toggleCode();
             return;
           }
           // Anything else (⌘⇧Z redo…) stays with the browser.
@@ -254,11 +263,6 @@ export function HtmlSource({
         if (key === "i") {
           e.preventDefault();
           cmd.execInline("italic", "i", "em");
-          return;
-        }
-        if (key === "e") {
-          e.preventDefault();
-          cmd.toggleCode();
           return;
         }
         if (key === "k") {
@@ -670,6 +674,7 @@ function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
     {
       label: "B",
       title: "太字",
+      shortcut: TOOLBAR_SHORTCUTS.bold,
       style: "font-weight: 700;",
       action: () => execInline("bold", "b", "strong"),
       isActive: () => state("bold"),
@@ -677,6 +682,7 @@ function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
     {
       label: "I",
       title: "斜体",
+      shortcut: TOOLBAR_SHORTCUTS.italic,
       style: "font-style: italic; font-family: Georgia, serif;",
       action: () => execInline("italic", "i", "em"),
       isActive: () => state("italic"),
@@ -684,6 +690,7 @@ function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
     {
       label: "S",
       title: "取り消し線",
+      shortcut: TOOLBAR_SHORTCUTS.strike,
       style: "text-decoration: line-through;",
       action: () => execInline("strikeThrough", "strike", "s"),
       isActive: () => state("strikeThrough"),
@@ -691,6 +698,7 @@ function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
     {
       label: "<>",
       title: "インラインコード",
+      shortcut: TOOLBAR_SHORTCUTS.code,
       style: "font-family: ui-monospace, monospace; font-size: 11px;",
       action: toggleCode,
       isActive: () => inTag("code"),
@@ -699,12 +707,14 @@ function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
     {
       label: "H2",
       title: "見出し2",
+      shortcut: TOOLBAR_SHORTCUTS.h2,
       action: () => toggleHeading("h2"),
       isActive: () => blockValue() === "h2",
     },
     {
       label: "H3",
       title: "見出し3",
+      shortcut: TOOLBAR_SHORTCUTS.h3,
       action: () => toggleHeading("h3"),
       isActive: () => blockValue() === "h3",
     },
@@ -712,18 +722,21 @@ function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
     {
       label: "•",
       title: "箇条書きリスト",
+      shortcut: TOOLBAR_SHORTCUTS.list,
       action: () => exec("insertUnorderedList"),
       isActive: () => state("insertUnorderedList"),
     },
     {
       label: "1.",
       title: "番号付きリスト",
+      shortcut: TOOLBAR_SHORTCUTS.numList,
       action: () => exec("insertOrderedList"),
       isActive: () => state("insertOrderedList"),
     },
     {
       label: "❝",
       title: "引用",
+      shortcut: TOOLBAR_SHORTCUTS.quote,
       action: toggleBlockquote,
       isActive: () => inTag("blockquote"),
     },
@@ -731,6 +744,7 @@ function buildToolbarButtons(doc: Document, emit: () => void): ToolbarButton[] {
     {
       label: "リンク",
       title: "リンクを設定",
+      shortcut: TOOLBAR_SHORTCUTS.link,
       action: () => applyLinkInDoc(doc, emit),
       isActive: () => inTag("a"),
     },

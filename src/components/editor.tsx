@@ -27,7 +27,11 @@ import { Aside, Div, Figcaption, Figure, ParagraphClass, Span } from "@/lib/pass
 import { Rp, Rt, Ruby } from "@/lib/ruby-nodes";
 import { loadScroll, saveScroll } from "@/lib/scroll-memory";
 import { Section } from "@/lib/section-node";
-import { type ToolbarButton, attachSelectionToolbar } from "@/lib/selection-toolbar";
+import {
+  TOOLBAR_SHORTCUTS,
+  type ToolbarButton,
+  attachSelectionToolbar,
+} from "@/lib/selection-toolbar";
 import { attachSpeechMenu } from "@/lib/speech";
 import { Speech, SpeechBubble, SpeechName, tiptapSpeechActions } from "@/lib/speech-node";
 import { Bold, Italic } from "@/lib/tag-preserving-marks";
@@ -40,9 +44,11 @@ import {
   uploadImage,
 } from "@/lib/upload-image";
 import { Extension } from "@tiptap/core";
+import { Code } from "@tiptap/extension-code";
 import { Dropcursor } from "@tiptap/extension-dropcursor";
 import { Image } from "@tiptap/extension-image";
 import { Link } from "@tiptap/extension-link";
+import { Strike } from "@tiptap/extension-strike";
 import { Table } from "@tiptap/extension-table";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
@@ -112,12 +118,27 @@ export function Editor({
 
   const editor = useEditor({
     extensions: [
+      // StarterKit's inline code and strike, moved off ⌘E and ⌘⇧S: Chrome
+      // hands those to extensions in use here (Claude's side panel, FireShot)
+      // before the page sees them. Listed ahead of StarterKit so the marks keep
+      // their schema order, which decides how marks nest when saved.
+      Code.extend({
+        addKeyboardShortcuts() {
+          return { "Mod-Shift-e": () => this.editor.commands.toggleCode() };
+        },
+      }),
+      Strike.extend({
+        addKeyboardShortcuts() {
+          return { "Mod-Shift-x": () => this.editor.commands.toggleStrike() };
+        },
+      }),
       // Disable StarterKit's Italic and Bold; the tag-preserving variants
       // below replace them so <i>/<em> and <b>/<strong> round-trip without
       // being flattened to <em>/<strong>. Its bundled Link (new in v3) goes
       // too: left in, it ran alongside the configured Link below with its
-      // default openOnClick and opened every link on a plain click.
-      StarterKit.configure({ italic: false, bold: false, link: false }),
+      // default openOnClick and opened every link on a plain click. Code and
+      // Strike are the ones above.
+      StarterKit.configure({ italic: false, bold: false, link: false, code: false, strike: false }),
       Italic,
       Bold,
       // Extend Link so anchor attributes used by translator-output content
@@ -860,6 +881,7 @@ function tiptapToolbarButtons(editor: TiptapEditor): ToolbarButton[] {
     {
       label: "B",
       title: "太字",
+      shortcut: TOOLBAR_SHORTCUTS.bold,
       style: "font-weight: 700;",
       action: () => applyHtmlAction(editor, "bold"),
       isActive: () => editor.isActive("bold"),
@@ -867,6 +889,7 @@ function tiptapToolbarButtons(editor: TiptapEditor): ToolbarButton[] {
     {
       label: "I",
       title: "斜体",
+      shortcut: TOOLBAR_SHORTCUTS.italic,
       style: "font-style: italic; font-family: Georgia, serif;",
       action: () => applyHtmlAction(editor, "italic"),
       isActive: () => editor.isActive("italic"),
@@ -874,6 +897,7 @@ function tiptapToolbarButtons(editor: TiptapEditor): ToolbarButton[] {
     {
       label: "S",
       title: "取り消し線",
+      shortcut: TOOLBAR_SHORTCUTS.strike,
       style: "text-decoration: line-through;",
       action: () => applyHtmlAction(editor, "strike"),
       isActive: () => editor.isActive("strike"),
@@ -881,6 +905,7 @@ function tiptapToolbarButtons(editor: TiptapEditor): ToolbarButton[] {
     {
       label: "<>",
       title: "インラインコード",
+      shortcut: TOOLBAR_SHORTCUTS.code,
       style: "font-family: ui-monospace, monospace; font-size: 11px;",
       action: () => applyHtmlAction(editor, "code"),
       isActive: () => editor.isActive("code"),
@@ -889,12 +914,14 @@ function tiptapToolbarButtons(editor: TiptapEditor): ToolbarButton[] {
     {
       label: "H2",
       title: "見出し2",
+      shortcut: TOOLBAR_SHORTCUTS.h2,
       action: () => applyHtmlAction(editor, "h2"),
       isActive: () => editor.isActive("heading", { level: 2 }),
     },
     {
       label: "H3",
       title: "見出し3",
+      shortcut: TOOLBAR_SHORTCUTS.h3,
       action: () => applyHtmlAction(editor, "h3"),
       isActive: () => editor.isActive("heading", { level: 3 }),
     },
@@ -902,18 +929,21 @@ function tiptapToolbarButtons(editor: TiptapEditor): ToolbarButton[] {
     {
       label: "•",
       title: "箇条書きリスト",
+      shortcut: TOOLBAR_SHORTCUTS.list,
       action: () => applyHtmlAction(editor, "list"),
       isActive: () => editor.isActive("bulletList"),
     },
     {
       label: "1.",
       title: "番号付きリスト",
+      shortcut: TOOLBAR_SHORTCUTS.numList,
       action: () => applyHtmlAction(editor, "numList"),
       isActive: () => editor.isActive("orderedList"),
     },
     {
       label: "❝",
       title: "引用",
+      shortcut: TOOLBAR_SHORTCUTS.quote,
       action: () => applyHtmlAction(editor, "quote"),
       isActive: () => editor.isActive("blockquote"),
     },
@@ -921,6 +951,7 @@ function tiptapToolbarButtons(editor: TiptapEditor): ToolbarButton[] {
     {
       label: "リンク",
       title: "リンクを設定",
+      shortcut: TOOLBAR_SHORTCUTS.link,
       action: () => applyHtmlAction(editor, "link"),
       isActive: () => editor.isActive("link"),
     },
