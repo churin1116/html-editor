@@ -165,6 +165,11 @@ export function Editor({
         },
       }).configure({
         openOnClick: false,
+        // Scripts link local pages by file:// URL (the title materials under
+        // ~/Pictures, reports in another repo). Tiptap drops links whose
+        // protocol isn't allowed, so without this they lose their link on load
+        // and on save. link-open.ts already resolves file: URLs.
+        protocols: ["file"],
         // biome-ignore lint/suspicious/noExplicitAny: HTMLAttributes typing rejects null but Tiptap accepts it as "omit this attr".
         HTMLAttributes: { rel: null, target: null, class: null } as any,
       }),

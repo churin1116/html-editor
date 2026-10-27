@@ -21,7 +21,9 @@
 // 「台本」 is ミナミナ's and the older question-box scripts'; the question box
 // now opens its script with 「今回の質問」 (a 定番 episode) or 「今回の噂」 (a 話題 one).
 const SCRIPT_HEADINGS = new Set(["台本", "今回の質問", "今回の噂"]);
-const NOT_SCRIPT = /^(狼のサブクエスチョン|資料|引用|YouTube|参考|メモ)/;
+// 「タイトル」 is the question box's title-ideas section (renamed from
+// 「YouTubeのタイトル案」 on 2026-10-27).
+const NOT_SCRIPT = /^(狼のサブクエスチョン|資料|引用|YouTube|参考|メモ|タイトル)/;
 const WOLF_NAMES = new Set(["オオカミ", "狼"]);
 const WOLF_PREFIX = "オオカミ：";
 
