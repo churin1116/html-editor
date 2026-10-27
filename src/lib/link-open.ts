@@ -81,7 +81,9 @@ function findAnchorTarget(root: ParentNode, id: string): Element | null {
 }
 
 // Act on a resolved link: a web URL opens in a new browser tab, an in-page
-// anchor scrolls `root`'s document, another note opens in the editor.
+// anchor jumps `root`'s document there instantly (long scripts link the top
+// and the far end, where a smooth scroll only makes you wait), another note
+// opens in the editor.
 export function followLink(
   target: LinkTarget,
   { root, openFile }: { root: ParentNode; openFile?: (path: string) => void },
@@ -92,7 +94,7 @@ export function followLink(
       return;
     case "anchor": {
       const el = findAnchorTarget(root, target.id);
-      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (el) el.scrollIntoView({ behavior: "instant", block: "start" });
       else toast.error(`リンク先 #${target.id} が見つかりません`);
       return;
     }

@@ -182,8 +182,9 @@ export const Toc = Node.create({
           return {};
         },
         props: {
-          // In the editor, follow a TOC link by scrolling the heading into
-          // view instead of navigating the editor page's own URL hash.
+          // In the editor, follow a TOC link by jumping the heading into view
+          // (instantly, like other in-page links — see followLink) instead of
+          // navigating the editor page's own URL hash.
           handleDOMEvents: {
             click: (view, event) => {
               const a = (event.target as HTMLElement).closest?.("nav[data-toc] a");
@@ -191,7 +192,7 @@ export const Toc = Node.create({
               event.preventDefault();
               const id = decodeURIComponent((a.getAttribute("href") ?? "").slice(1));
               const target = id ? view.dom.querySelector(`[id="${CSS.escape(id)}"]`) : null;
-              target?.scrollIntoView({ behavior: "smooth", block: "start" });
+              target?.scrollIntoView({ behavior: "instant", block: "start" });
               return true;
             },
           },
