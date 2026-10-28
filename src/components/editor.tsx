@@ -275,9 +275,9 @@ export function Editor({
         // Handled here, before ProseMirror's own ⌘+click (select the
         // enclosing node) runs. ProseMirror calls this only for a click, not
         // for a drag that selects part of the link text.
-        const href = linkHrefToOpen(event);
-        if (href) {
-          followLink(resolveLinkHref(href, pathRef.current), {
+        const link = linkHrefToOpen(event);
+        if (link) {
+          followLink(resolveLinkHref(link, pathRef.current), {
             root: view.dom,
             openFile: onOpenFileRef.current,
           });

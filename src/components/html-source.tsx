@@ -353,11 +353,11 @@ export function HtmlSource({
       // A drag that ends inside the link still fires a click; with text
       // selected it was a selection, so leave it.
       const onLinkClick = (e: MouseEvent) => {
-        const href = linkHrefToOpen(e);
-        if (!href || doc.getSelection()?.isCollapsed === false) return;
+        const link = linkHrefToOpen(e);
+        if (!link || doc.getSelection()?.isCollapsed === false) return;
         e.preventDefault();
         e.stopPropagation();
-        followLink(resolveLinkHref(href, path), {
+        followLink(resolveLinkHref(link, path), {
           root: doc,
           openFile: onOpenFileRef.current,
         });

@@ -8,18 +8,25 @@ import { toast } from "sonner";
 // arrow keys. Shift / Option clicks stay editing gestures (extend the
 // selection). A link card is a block to select and drag, so a plain click
 // still selects it and ⌘+click (Ctrl+click elsewhere) follows it.
+//
+// A link to a page on disk opens in the editor, unless it says
+// target="_blank": then the page opens read-only in a new browser tab
+// (/api/view), the way a reference page beside a script is meant to be read.
 
 export type LinkTarget =
   | { kind: "external"; url: string }
   | { kind: "anchor"; id: string }
   | { kind: "file"; path: string }
+  | { kind: "view"; url: string }
   | { kind: "unsupported"; href: string };
 
-// The href a click should follow, or null to leave the click to the editor.
+export type LinkToOpen = { href: string; newTab: boolean };
+
+// The link a click should follow, or null to leave the click to the editor.
 // A link card counts anywhere on the card: the Tiptap view sets its anchor to
 // pointer-events: none, so the click lands on the wrapper. An href that goes
 // nowhere ("#", javascript:) belongs to a page script, which keeps the click.
-export function linkHrefToOpen(e: MouseEvent): string | null {
+export function linkHrefToOpen(e: MouseEvent): LinkToOpen | null {
   if (e.button !== 0 || e.shiftKey || e.altKey) return null;
   const el = e.target as Element | null;
   if (!el?.closest) return null;
@@ -31,7 +38,7 @@ export function linkHrefToOpen(e: MouseEvent): string | null {
     : el.closest("a[href]");
   const href = a?.getAttribute("href")?.trim();
   if (!href || href === "#" || /^javascript:/i.test(href)) return null;
-  return href;
+  return { href, newTab: a?.getAttribute("target") === "_blank" };
 }
 
 const EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:", "tel:"]);
@@ -50,8 +57,12 @@ function decode(s: string): string {
 // Resolve an href the way the saved file would when opened on its own:
 // relative to the file's own location on disk, not to the editor's localhost
 // URL. Links into another .html/.md open that file in the editor; anything
-// else on disk (a PDF, an image) has no way to open from here.
-export function resolveLinkHref(href: string, currentPath: string | undefined): LinkTarget {
+// else on disk (a PDF, an image) has no way to open from here — unless the
+// link asks for a new tab, which shows any file under the roots as it is.
+export function resolveLinkHref(
+  { href, newTab }: LinkToOpen,
+  currentPath: string | undefined,
+): LinkTarget {
   const raw = href.trim();
   if (raw.startsWith("#")) return { kind: "anchor", id: decode(raw.slice(1)) };
   // Segment-wise encoding so a "#" or "?" in a folder name stays part of the path.
@@ -68,6 +79,7 @@ export function resolveLinkHref(href: string, currentPath: string | undefined): 
   if (url.protocol !== "file:") return { kind: "unsupported", href: raw };
   const path = decode(url.pathname);
   if (path === currentPath && url.hash) return { kind: "anchor", id: decode(url.hash.slice(1)) };
+  if (newTab) return { kind: "view", url: `/api/view${url.pathname}${url.hash}` };
   return EDITABLE_EXT.test(path) ? { kind: "file", path } : { kind: "unsupported", href: raw };
 }
 
@@ -83,13 +95,16 @@ function findAnchorTarget(root: ParentNode, id: string): Element | null {
 // Act on a resolved link: a web URL opens in a new browser tab, an in-page
 // anchor jumps `root`'s document there instantly (long scripts link the top
 // and the far end, where a smooth scroll only makes you wait), another note
-// opens in the editor.
+// opens in the editor, and a page asked for in a new tab opens there to read.
 export function followLink(
   target: LinkTarget,
   { root, openFile }: { root: ParentNode; openFile?: (path: string) => void },
 ) {
   switch (target.kind) {
     case "external":
+      window.open(target.url, "_blank", "noopener,noreferrer");
+      return;
+    case "view":
       window.open(target.url, "_blank", "noopener,noreferrer");
       return;
     case "anchor": {
